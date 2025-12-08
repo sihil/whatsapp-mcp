@@ -42,6 +42,14 @@ class Contact:
     jid: str
 
 @dataclass
+class GroupMember:
+    jid: str
+    phone_number: Optional[str]
+    display_name: Optional[str]
+    is_admin: bool
+    is_super_admin: bool
+
+@dataclass
 class MessageContext:
     message: Message
     before: List[Message]
@@ -765,3 +773,54 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
         return None
+
+
+def get_group_members(group_jid: str) -> dict:
+    """Get members of a WhatsApp group.
+
+    Args:
+        group_jid: The JID of the group (must end with @g.us)
+
+    Returns:
+        A dictionary containing success status, group name, member count, and list of members
+    """
+    try:
+        url = f"{WHATSAPP_API_BASE_URL}/group/members"
+        payload = {
+            "group_jid": group_jid
+        }
+
+        response = requests.post(url, json=payload)
+
+        if response.status_code == 200:
+            result = response.json()
+            return result
+        else:
+            return {
+                "success": False,
+                "message": f"Error: HTTP {response.status_code} - {response.text}",
+                "members": [],
+                "member_count": 0
+            }
+
+    except requests.RequestException as e:
+        return {
+            "success": False,
+            "message": f"Request error: {str(e)}",
+            "members": [],
+            "member_count": 0
+        }
+    except json.JSONDecodeError:
+        return {
+            "success": False,
+            "message": f"Error parsing response: {response.text}",
+            "members": [],
+            "member_count": 0
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Unexpected error: {str(e)}",
+            "members": [],
+            "member_count": 0
+        }
