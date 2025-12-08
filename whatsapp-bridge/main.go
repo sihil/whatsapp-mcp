@@ -716,6 +716,27 @@ func getGroupMembers(client *whatsmeow.Client, groupJID string) (bool, string, s
 			member.PhoneNumber = participant.JID.User
 		}
 
+		// Look up contact info for better display name
+		// First, try to resolve LID to phone number for proper contact lookup
+		lookupJID := participant.JID
+		if participant.JID.Server == types.HiddenUserServer {
+			if pn, err := client.Store.LIDs.GetPNForLID(context.Background(), participant.JID); err == nil && !pn.IsEmpty() {
+				lookupJID = pn
+			}
+		}
+
+		contact, err := client.Store.Contacts.GetContact(context.Background(), lookupJID)
+		if err == nil {
+			// Use fallback chain: FullName → PushName → BusinessName
+			if contact.FullName != "" {
+				member.DisplayName = contact.FullName
+			} else if contact.PushName != "" {
+				member.DisplayName = contact.PushName
+			} else if contact.BusinessName != "" {
+				member.DisplayName = contact.BusinessName
+			}
+		}
+
 		members = append(members, member)
 	}
 
