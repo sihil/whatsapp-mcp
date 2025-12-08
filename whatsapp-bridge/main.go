@@ -484,6 +484,29 @@ type DownloadMediaResponse struct {
 	Path     string `json:"path,omitempty"`
 }
 
+// GroupMembersRequest represents the request body for the group members API
+type GroupMembersRequest struct {
+	GroupJID string `json:"group_jid"`
+}
+
+// GroupMember represents a single group participant
+type GroupMember struct {
+	JID          string `json:"jid"`
+	PhoneNumber  string `json:"phone_number,omitempty"`
+	DisplayName  string `json:"display_name,omitempty"`
+	IsAdmin      bool   `json:"is_admin"`
+	IsSuperAdmin bool   `json:"is_super_admin"`
+}
+
+// GroupMembersResponse represents the response for the group members API
+type GroupMembersResponse struct {
+	Success     bool          `json:"success"`
+	Message     string        `json:"message"`
+	GroupName   string        `json:"group_name,omitempty"`
+	Members     []GroupMember `json:"members,omitempty"`
+	MemberCount int           `json:"member_count"`
+}
+
 // Store additional media info in the database
 func (store *MessageStore) StoreMediaInfo(id, chatJID, url string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
 	_, err := store.db.Exec(
@@ -641,7 +664,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	}
 
 	// Download the media using whatsmeow client
-	mediaData, err := client.Download(downloader)
+	mediaData, err := client.Download(context.Background(), downloader)
 	if err != nil {
 		return false, "", "", "", fmt.Errorf("failed to download media: %v", err)
 	}
@@ -653,6 +676,50 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 
 	fmt.Printf("Successfully downloaded %s media to %s (%d bytes)\n", mediaType, absPath, len(mediaData))
 	return true, mediaType, filename, absPath, nil
+}
+
+// Function to get group members from WhatsApp
+func getGroupMembers(client *whatsmeow.Client, groupJID string) (bool, string, string, []GroupMember) {
+	if !client.IsConnected() {
+		return false, "Not connected to WhatsApp", "", nil
+	}
+
+	// Parse the JID
+	jid, err := types.ParseJID(groupJID)
+	if err != nil {
+		return false, fmt.Sprintf("Invalid group JID: %v", err), "", nil
+	}
+
+	// Verify it's a group JID
+	if jid.Server != "g.us" {
+		return false, "JID is not a group (must end with @g.us)", "", nil
+	}
+
+	// Get group info from WhatsApp
+	groupInfo, err := client.GetGroupInfo(context.Background(), jid)
+	if err != nil {
+		return false, fmt.Sprintf("Failed to get group info: %v", err), "", nil
+	}
+
+	// Convert participants to our GroupMember struct
+	members := make([]GroupMember, 0, len(groupInfo.Participants))
+	for _, participant := range groupInfo.Participants {
+		member := GroupMember{
+			JID:          participant.JID.String(),
+			IsAdmin:      participant.IsAdmin,
+			IsSuperAdmin: participant.IsSuperAdmin,
+			DisplayName:  participant.DisplayName,
+		}
+
+		// Add phone number if available
+		if !participant.JID.IsEmpty() && participant.JID.User != "" {
+			member.PhoneNumber = participant.JID.User
+		}
+
+		members = append(members, member)
+	}
+
+	return true, "Successfully retrieved group members", groupInfo.Name, members
 }
 
 // Extract direct path from a WhatsApp media URL
@@ -774,6 +841,61 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		})
 	})
 
+	// Handler for getting group members
+	http.HandleFunc("/api/group/members", func(w http.ResponseWriter, r *http.Request) {
+		// Only allow POST requests
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Parse the request body
+		var req GroupMembersRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request format", http.StatusBadRequest)
+			return
+		}
+
+		// Validate request
+		if req.GroupJID == "" {
+			http.Error(w, "Group JID is required", http.StatusBadRequest)
+			return
+		}
+
+		// Basic JID format validation
+		if !strings.Contains(req.GroupJID, "@") {
+			http.Error(w, "Invalid JID format", http.StatusBadRequest)
+			return
+		}
+
+		// Get group members
+		success, message, groupName, members := getGroupMembers(client, req.GroupJID)
+
+		// Set response headers
+		w.Header().Set("Content-Type", "application/json")
+
+		// Determine appropriate status code
+		if !success {
+			// Client errors (invalid input) get 400, server errors get 500
+			if strings.Contains(message, "Invalid group JID") ||
+				strings.Contains(message, "not a group") ||
+				strings.Contains(message, "Invalid JID format") {
+				w.WriteHeader(http.StatusBadRequest)
+			} else {
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+		}
+
+		// Send response
+		json.NewEncoder(w).Encode(GroupMembersResponse{
+			Success:     success,
+			Message:     message,
+			GroupName:   groupName,
+			Members:     members,
+			MemberCount: len(members),
+		})
+	})
+
 	// Start the server
 	serverAddr := fmt.Sprintf(":%d", port)
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
@@ -800,14 +922,14 @@ func main() {
 		return
 	}
 
-	container, err := sqlstore.New("sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
+	container, err := sqlstore.New(context.Background(), "sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
 	if err != nil {
 		logger.Errorf("Failed to connect to database: %v", err)
 		return
 	}
 
 	// Get device store - This contains session information
-	deviceStore, err := container.GetFirstDevice()
+	deviceStore, err := container.GetFirstDevice(context.Background())
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// No device exists, create one
@@ -973,7 +1095,7 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 
 		// If we didn't get a name, try group info
 		if name == "" {
-			groupInfo, err := client.GetGroupInfo(jid)
+			groupInfo, err := client.GetGroupInfo(context.Background(), jid)
 			if err == nil && groupInfo.Name != "" {
 				name = groupInfo.Name
 			} else {
@@ -988,7 +1110,7 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 		logger.Infof("Getting name for contact: %s", chatJID)
 
 		// Just use contact info (full name)
-		contact, err := client.Store.Contacts.GetContact(jid)
+		contact, err := client.Store.Contacts.GetContact(context.Background(), jid)
 		if err == nil && contact.FullName != "" {
 			name = contact.FullName
 		} else if sender != "" {
