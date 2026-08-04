@@ -10,6 +10,7 @@ from db import (
     get_sender_name,
     message_from_row,
     resolve_chat_jid,
+    resolve_sender_names,
 )
 from models import Chat, Contact, Message
 
@@ -41,7 +42,7 @@ def _chat_query(include_last_message: bool, where: str = "", suffix: str = "") -
     return " ".join(parts)
 
 
-def format_message(message: Message, show_chat_info: bool = True) -> str:
+def format_message(message: Message, show_chat_info: bool = True, cursor=None) -> str:
     """Render a single message as a human-readable line."""
     output = ""
 
@@ -56,7 +57,10 @@ def format_message(message: Message, show_chat_info: bool = True) -> str:
     else:
         content_prefix = f"[Message ID: {message.id}] "
 
-    sender_name = "Me" if message.is_from_me else get_sender_name(message.sender)
+    if message.is_from_me:
+        sender_name = "Me"
+    else:
+        sender_name = message.sender_name or get_sender_name(message.sender, cursor)
     output += f"From: {sender_name}: {content_prefix}{message.content}\n"
     return output
 
@@ -197,7 +201,8 @@ def get_last_interaction(jid: str) -> Optional[str]:
         if not row:
             return None
 
-        return format_message(message_from_row(row))
+        names = resolve_sender_names(cursor, [row[3]] if not row[6] else [])
+        return format_message(message_from_row(row, names), cursor=cursor)
 
     finally:
         conn.close()

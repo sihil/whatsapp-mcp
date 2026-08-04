@@ -14,6 +14,7 @@ class Message:
     id: str
     chat_name: Optional[str] = None
     media_type: Optional[str] = None
+    sender_name: Optional[str] = None
 
 
 @dataclass

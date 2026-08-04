@@ -3,7 +3,7 @@ and JID/alias resolution shared by the query modules."""
 import os
 import sqlite3
 from datetime import datetime
-from typing import Any, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 from urllib.parse import quote
 
 from config import messages_db_path
@@ -75,6 +75,10 @@ def resolve_chat_jid(cursor, jid: Optional[str]) -> Optional[str]:
         return jid
 
 
+def placeholders(values: Sequence[Any]) -> str:
+    return ", ".join("?" * len(values))
+
+
 def parse_date_param(value: str, field: str) -> str:
     """Validate an ISO-8601 argument and return it in a form SQLite's
     `datetime()` can normalize. Never bind datetime objects: their sqlite3
@@ -99,29 +103,41 @@ def parse_date_param(value: str, field: str) -> str:
     return parsed.astimezone().isoformat(sep=" ")
 
 
-def get_sender_name(sender_jid: str) -> str:
-    conn = connect()
-    try:
-        cursor = conn.cursor()
+def resolve_sender_names(
+    cursor: sqlite3.Cursor,
+    senders: Iterable[str],
+    cache: Optional[Dict[str, Optional[str]]] = None,
+) -> Dict[str, str]:
+    """Map sender JIDs to display names in one bulk query plus one fallback
+    lookup per still-unresolved sender, rather than one connection per message.
+    Pass a `cache` dict (misses included) to resolve each JID at most once
+    across several batches, e.g. a listing and its per-match context windows."""
+    unique = [sender for sender in dict.fromkeys(senders) if sender]
+    if not unique:
+        return {}
 
-        # First try matching by exact JID
-        cursor.execute("""
-            SELECT name
-            FROM chats
-            WHERE jid = ?
-            LIMIT 1
-        """, (sender_jid,))
+    names: Dict[str, str] = {}
+    pending: List[str] = []
+    for sender in unique:
+        if cache is not None and sender in cache:
+            cached = cache[sender]
+            if cached:
+                names[sender] = cached
+        else:
+            pending.append(sender)
+    if not pending:
+        return names
 
-        result = cursor.fetchone()
+    cursor.execute(
+        f"SELECT jid, name FROM chats WHERE jid IN ({placeholders(pending)})", tuple(pending)
+    )
+    for jid, name in cursor.fetchall():
+        if name:
+            names[jid] = name
 
-        # If no result, try looking for the number within JIDs
-        if not result:
-            # Extract the phone number part if it's a JID
-            if '@' in sender_jid:
-                phone_part = sender_jid.split('@')[0]
-            else:
-                phone_part = sender_jid
-
+    for sender in pending:
+        if sender not in names:
+            phone_part = sender.split("@")[0]
             # Anchor on the user part and exclude groups: a bare substring
             # match would happily label a sender with a group's name, or with
             # another contact whose number merely contains these digits.
@@ -130,30 +146,53 @@ def get_sender_name(sender_jid: str) -> str:
                 "AND jid NOT LIKE '%@g.us' AND name IS NOT NULL AND name != '' LIMIT 1",
                 (f"{escape_like(phone_part)}@%",),
             )
+            row = cursor.fetchone()
+            if row and row[0]:
+                names[sender] = row[0]
+        if cache is not None:
+            cache[sender] = names.get(sender)
+    return names
 
-            result = cursor.fetchone()
 
-        if result and result[0]:
-            return result[0]
-        else:
-            return sender_jid
-
+def get_sender_name(sender_jid: str, cursor: Optional[sqlite3.Cursor] = None) -> str:
+    """Display name for a sender JID, falling back to the JID itself."""
+    if cursor is not None:
+        return resolve_sender_names(cursor, [sender_jid]).get(sender_jid, sender_jid)
+    conn = connect()
+    try:
+        return resolve_sender_names(conn.cursor(), [sender_jid]).get(sender_jid, sender_jid)
     finally:
         conn.close()
 
 
-def message_from_row(row: Sequence[Any]) -> Message:
+def message_from_row(row: Sequence[Any], sender_names: Optional[Dict[str, str]] = None) -> Message:
     """Build a Message from a row selected with MESSAGE_COLUMNS."""
+    sender = row[3]
+    is_from_me = bool(row[6])
+    if is_from_me:
+        sender_name = "Me"
+    else:
+        sender_name = (sender_names or {}).get(sender, sender)
     return Message(
         id=row[0],
         chat_jid=row[1],
         chat_name=row[2],
-        sender=row[3],
+        sender=sender,
         content=row[4],
         timestamp=datetime.fromisoformat(row[5]),
-        is_from_me=bool(row[6]),
+        is_from_me=is_from_me,
         media_type=row[7],
+        sender_name=sender_name,
     )
+
+
+def messages_from_rows(
+    cursor: sqlite3.Cursor,
+    rows: Sequence[Sequence[Any]],
+    name_cache: Optional[Dict[str, Optional[str]]] = None,
+) -> List[Message]:
+    names = resolve_sender_names(cursor, [row[3] for row in rows if not row[6]], name_cache)
+    return [message_from_row(row, names) for row in rows]
 
 
 def chat_from_row(row: Sequence[Any]) -> Chat:

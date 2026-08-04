@@ -1,5 +1,5 @@
 """Message queries against the bridge's message store."""
-from typing import Optional
+from typing import Dict, Optional
 
 from db import (
     DATE_EXPR,
@@ -7,7 +7,7 @@ from db import (
     canonical_jid,
     connect,
     escape_like,
-    message_from_row,
+    messages_from_rows,
     parse_date_param,
     resolve_chat_jid,
 )
@@ -76,7 +76,8 @@ def list_messages(
         params.extend([limit, offset])
 
         cursor.execute(" ".join(query_parts), tuple(params))
-        result = [message_from_row(row) for row in cursor.fetchall()]
+        name_cache: Dict[str, Optional[str]] = {}
+        result = messages_from_rows(cursor, cursor.fetchall(), name_cache)
 
         if include_context and result:
             # Add context for each message
@@ -121,7 +122,8 @@ def get_message_context(
         if not msg_data:
             raise ValueError(f"Message with ID {message_id} not found")
 
-        target_message = message_from_row(msg_data)
+        name_cache: Dict[str, Optional[str]] = {}
+        target_message = messages_from_rows(cursor, [msg_data], name_cache)[0]
 
         # Get messages before
         cursor.execute(f"""
@@ -131,7 +133,7 @@ def get_message_context(
             LIMIT ?
         """, (target_message.chat_jid, msg_data[5], before))
 
-        before_messages = [message_from_row(row) for row in cursor.fetchall()]
+        before_messages = messages_from_rows(cursor, cursor.fetchall(), name_cache)
 
         # Get messages after
         cursor.execute(f"""
@@ -141,7 +143,7 @@ def get_message_context(
             LIMIT ?
         """, (target_message.chat_jid, msg_data[5], after))
 
-        after_messages = [message_from_row(row) for row in cursor.fetchall()]
+        after_messages = messages_from_rows(cursor, cursor.fetchall(), name_cache)
 
         return MessageContext(
             message=target_message,
