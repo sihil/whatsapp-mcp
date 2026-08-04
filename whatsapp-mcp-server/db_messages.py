@@ -1,5 +1,6 @@
 """Message queries against the bridge's message store."""
-from typing import Dict, Optional
+import sqlite3
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from db import (
     DATE_EXPR,
@@ -12,13 +13,47 @@ from db import (
     resolve_chat_jid,
 )
 from db_chats import format_messages_list
-from models import MessageContext
+from models import Message, MessageContext
 
 _MESSAGE_SOURCE = f"""
     SELECT {MESSAGE_COLUMNS}
     FROM messages
     JOIN chats ON messages.chat_jid = chats.jid
 """
+
+
+def _context_around(
+    cursor: sqlite3.Cursor,
+    chat_jid: str,
+    timestamp: str,
+    before: int,
+    after: int,
+    name_cache: Optional[Dict[str, Optional[str]]] = None,
+) -> Tuple[List[Message], List[Message]]:
+    """Messages immediately before and after `timestamp` in one chat.
+    `name_cache` is shared across the calls made for one listing so sender
+    names resolve once, not once per match."""
+    before_messages: List[Message] = []
+    if before > 0:
+        cursor.execute(f"""
+            {_MESSAGE_SOURCE}
+            WHERE messages.chat_jid = ? AND messages.timestamp < ?
+            ORDER BY messages.timestamp DESC
+            LIMIT ?
+        """, (chat_jid, timestamp, before))
+        before_messages = messages_from_rows(cursor, cursor.fetchall(), name_cache)
+
+    after_messages: List[Message] = []
+    if after > 0:
+        cursor.execute(f"""
+            {_MESSAGE_SOURCE}
+            WHERE messages.chat_jid = ? AND messages.timestamp > ?
+            ORDER BY messages.timestamp ASC
+            LIMIT ?
+        """, (chat_jid, timestamp, after))
+        after_messages = messages_from_rows(cursor, cursor.fetchall(), name_cache)
+
+    return before_messages, after_messages
 
 
 def list_messages(
@@ -76,17 +111,21 @@ def list_messages(
         params.extend([limit, offset])
 
         cursor.execute(" ".join(query_parts), tuple(params))
+        rows: Sequence[Sequence[Any]] = cursor.fetchall()
         name_cache: Dict[str, Optional[str]] = {}
-        result = messages_from_rows(cursor, cursor.fetchall(), name_cache)
+        result = messages_from_rows(cursor, rows, name_cache)
 
         if include_context and result:
-            # Add context for each message
+            # Add context for each message, reusing this connection
             messages_with_context = []
-            for msg in result:
-                context = get_message_context(msg.id, context_before, context_after, msg.chat_jid)
-                messages_with_context.extend(context.before)
-                messages_with_context.append(context.message)
-                messages_with_context.extend(context.after)
+            for row, message in zip(rows, result):
+                context_before_msgs, context_after_msgs = _context_around(
+                    cursor, message.chat_jid, row[5],
+                    context_before, context_after, name_cache
+                )
+                messages_with_context.extend(context_before_msgs)
+                messages_with_context.append(message)
+                messages_with_context.extend(context_after_msgs)
 
             return format_messages_list(messages_with_context, show_chat_info=True)
 
@@ -125,25 +164,9 @@ def get_message_context(
         name_cache: Dict[str, Optional[str]] = {}
         target_message = messages_from_rows(cursor, [msg_data], name_cache)[0]
 
-        # Get messages before
-        cursor.execute(f"""
-            {_MESSAGE_SOURCE}
-            WHERE messages.chat_jid = ? AND messages.timestamp < ?
-            ORDER BY messages.timestamp DESC
-            LIMIT ?
-        """, (target_message.chat_jid, msg_data[5], before))
-
-        before_messages = messages_from_rows(cursor, cursor.fetchall(), name_cache)
-
-        # Get messages after
-        cursor.execute(f"""
-            {_MESSAGE_SOURCE}
-            WHERE messages.chat_jid = ? AND messages.timestamp > ?
-            ORDER BY messages.timestamp ASC
-            LIMIT ?
-        """, (target_message.chat_jid, msg_data[5], after))
-
-        after_messages = messages_from_rows(cursor, cursor.fetchall(), name_cache)
+        before_messages, after_messages = _context_around(
+            cursor, target_message.chat_jid, msg_data[5], before, after, name_cache
+        )
 
         return MessageContext(
             message=target_message,
