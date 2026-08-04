@@ -1,11 +1,59 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"testing"
 
 	"go.mau.fi/whatsmeow/types"
 )
+
+type fakeAltResolver struct {
+	alt map[string]types.JID
+}
+
+func (f fakeAltResolver) GetAltJID(ctx context.Context, jid types.JID) (types.JID, error) {
+	return f.alt[jid.String()], nil
+}
+
+func TestResolveStoredChatJID(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("opening in-memory db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE messages (id TEXT, chat_jid TEXT, PRIMARY KEY (id, chat_jid))`); err != nil {
+		t.Fatalf("creating table: %v", err)
+	}
+	store := &MessageStore{db: db}
+
+	pnKey := types.JID{User: "16465559999", Server: types.DefaultUserServer}
+	lidKey := types.JID{User: "74616466886757", Server: types.HiddenUserServer}
+	if _, err := db.Exec("INSERT INTO messages (id, chat_jid) VALUES ('MSG1', ?)", pnKey.String()); err != nil {
+		t.Fatalf("inserting row: %v", err)
+	}
+	alts := fakeAltResolver{alt: map[string]types.JID{
+		lidKey.String(): pnKey,
+		pnKey.String():  lidKey,
+	}}
+
+	tests := []struct {
+		name string
+		key  types.JID
+		want types.JID
+	}{
+		{"message under given key keeps the key even when an alt is mapped", pnKey, pnKey},
+		{"stale alternate-namespace key resolves to the stored key", lidKey, pnKey},
+		{"unknown key with no alt mapping is returned unchanged", types.JID{User: "19998887777", Server: types.DefaultUserServer}, types.JID{User: "19998887777", Server: types.DefaultUserServer}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolveStoredChatJID(context.Background(), alts, store, "MSG1", tt.key); got != tt.want {
+				t.Errorf("resolveStoredChatJID(%s) = %s, want %s", tt.key, got, tt.want)
+			}
+		})
+	}
+}
 
 func TestBuildReplyContextInfo(t *testing.T) {
 	participant := types.JID{User: "74616466886757", Server: types.HiddenUserServer}

@@ -632,17 +632,9 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	var fileLength uint64
 	var err error
 
-	// A caller may hold a stale chat key from the other addressing namespace
-	// (phone number vs LID); retry the lookup with the mapped alternate key
-	// before concluding the message doesn't exist.
 	if jid, jidErr := types.ParseJID(chatJID); jidErr == nil {
-		var exists int
-		if scanErr := messageStore.db.QueryRow(
-			"SELECT 1 FROM messages WHERE id = ? AND chat_jid = ?", messageID, chatJID,
-		).Scan(&exists); scanErr == sql.ErrNoRows {
-			if alt, altErr := client.Store.GetAltJID(context.Background(), jid); altErr == nil && !alt.IsEmpty() {
-				chatJID = alt.String()
-			}
+		if resolved := resolveStoredChatJID(context.Background(), client.Store, messageStore, messageID, jid); resolved != jid {
+			chatJID = resolved.String()
 		}
 	}
 
@@ -740,20 +732,35 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	return true, mediaType, filename, absPath, nil
 }
 
-// resolveReplyContext looks up the reply target message and builds the
-// quoted-reply ContextInfo. DM chats can be keyed under either addressing
-// namespace (phone number vs LID), so the lookup retries with the mapped
-// alternate key before concluding the target doesn't exist. Returns a
-// non-empty errMsg on failure.
-func resolveReplyContext(client *whatsmeow.Client, messageStore *MessageStore, recipientJID types.JID, replyTo string) (ctx *waProto.ContextInfo, errMsg string) {
-	chatKey := recipientJID
-	sender, content, mediaType, isFromMe, err := messageStore.GetMessageForReply(replyTo, chatKey.String())
-	if err == sql.ErrNoRows {
-		if alt, altErr := client.Store.GetAltJID(context.Background(), recipientJID); altErr == nil && !alt.IsEmpty() {
-			chatKey = alt
-			sender, content, mediaType, isFromMe, err = messageStore.GetMessageForReply(replyTo, chatKey.String())
-		}
+// altJIDResolver is the subset of whatsmeow's device store used to map a JID
+// to its counterpart in the other addressing namespace (phone number vs LID).
+type altJIDResolver interface {
+	GetAltJID(ctx context.Context, jid types.JID) (types.JID, error)
+}
+
+// resolveStoredChatJID returns the chat key under which messageID is stored:
+// the given key when the row exists there, otherwise the mapped alternate-
+// namespace key when one is known. Callers may hold a stale key from the
+// other namespace; the store is canonicalized to a single form.
+func resolveStoredChatJID(ctx context.Context, alts altJIDResolver, store *MessageStore, messageID string, chatJID types.JID) types.JID {
+	var exists int
+	err := store.db.QueryRow(
+		"SELECT 1 FROM messages WHERE id = ? AND chat_jid = ?", messageID, chatJID.String(),
+	).Scan(&exists)
+	if err != sql.ErrNoRows {
+		return chatJID
 	}
+	if alt, altErr := alts.GetAltJID(ctx, chatJID); altErr == nil && !alt.IsEmpty() {
+		return alt
+	}
+	return chatJID
+}
+
+// resolveReplyContext looks up the reply target message and builds the
+// quoted-reply ContextInfo. Returns a non-empty errMsg on failure.
+func resolveReplyContext(client *whatsmeow.Client, messageStore *MessageStore, recipientJID types.JID, replyTo string) (ctx *waProto.ContextInfo, errMsg string) {
+	chatKey := resolveStoredChatJID(context.Background(), client.Store, messageStore, replyTo, recipientJID)
+	sender, content, mediaType, isFromMe, err := messageStore.GetMessageForReply(replyTo, chatKey.String())
 	if err == sql.ErrNoRows {
 		return nil, "Reply target message not found in chat"
 	}
