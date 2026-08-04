@@ -10,7 +10,7 @@ WhatsApp MCP server: lets an MCP client (Claude Desktop, Cursor) search/read per
 
 Two cooperating processes; both must be running for the system to work:
 
-1. **`whatsapp-bridge/`** — Go application (single file, `main.go`) using [whatsmeow](https://github.com/tulir/whatsmeow). Connects to WhatsApp, authenticates via QR code, stores message history in SQLite, and exposes a REST API on `localhost:8080`:
+1. **`whatsapp-bridge/`** — Go application (`main.go`: bridge, REST API, message store; `identity.go`: JID canonicalization; Go tests alongside) using [whatsmeow](https://github.com/tulir/whatsmeow). Connects to WhatsApp, authenticates via QR code, stores message history in SQLite, and exposes a REST API on `localhost:8080`:
    - `POST /api/send` — send a text message or media file; optional `reply_to` (a message ID) sends it as a quoted reply
    - `POST /api/download` — download media from a message to disk
    - `POST /api/group/members` — list group members (with contact-name lookup)
@@ -38,7 +38,10 @@ Two cooperating processes; both must be running for the system to work:
 
 ```bash
 # Run the Go bridge (must run from whatsapp-bridge/ so store/ resolves correctly)
-cd whatsapp-bridge && go run main.go
+cd whatsapp-bridge && go run .
+
+# Run the bridge tests
+cd whatsapp-bridge && go test ./...
 
 # Build the bridge binary (gitignored)
 cd whatsapp-bridge && go build
@@ -47,7 +50,7 @@ cd whatsapp-bridge && go build
 cd whatsapp-mcp-server && uv run main.py
 ```
 
-Python deps are managed with `uv` (`pyproject.toml` + `uv.lock`, Python ≥3.11). There are no tests or linters configured in this repo.
+Python deps are managed with `uv` (`pyproject.toml` + `uv.lock`, Python ≥3.11). The Go bridge has tests (`go test ./...`); there are no Python tests and no linters configured.
 
 ## Gotchas
 
