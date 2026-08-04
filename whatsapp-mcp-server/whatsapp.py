@@ -630,31 +630,32 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
         if 'conn' in locals():
             conn.close()
 
-def send_message(recipient: str, message: str) -> Tuple[bool, str]:
+def send_message(recipient: str, message: str, reply_to: Optional[str] = None) -> Tuple[bool, str]:
     try:
         # Validate input
         if not recipient:
             return False, "Recipient must be provided"
-        
+
         url = f"{WHATSAPP_API_BASE_URL}/send"
         payload = {
             "recipient": recipient,
             "message": message,
         }
-        
+        if reply_to:
+            payload["reply_to"] = reply_to
+
         response = requests.post(url, json=payload)
-        
-        # Check if the request was successful
-        if response.status_code == 200:
+
+        # The bridge returns a {success, message} JSON body on both 200 and
+        # error responses; only its plain-text validation errors are not JSON.
+        try:
             result = response.json()
-            return result.get("success", False), result.get("message", "Unknown response")
-        else:
+        except json.JSONDecodeError:
             return False, f"Error: HTTP {response.status_code} - {response.text}"
-            
+        return result.get("success", False), result.get("message", "Unknown response")
+
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
-    except json.JSONDecodeError:
-        return False, f"Error parsing response: {response.text}"
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
 
