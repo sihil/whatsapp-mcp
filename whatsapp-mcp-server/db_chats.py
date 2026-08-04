@@ -1,9 +1,29 @@
 """Chat and contact queries against the bridge's message store."""
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from db import canonical_jid, connect, get_sender_name, resolve_chat_jid
 from models import Chat, Contact, Message
+
+_CHAT_WITH_LAST_MESSAGE = """
+    SELECT c.jid, c.name, c.last_message_time, m.content, m.sender, m.is_from_me
+    FROM chats c
+    LEFT JOIN messages m ON c.jid = m.chat_jid AND c.last_message_time = m.timestamp
+"""
+# Without the join there is no messages row to read the last-message columns
+# from, so select NULLs in their place and keep the row shape identical.
+_CHAT_ONLY = "SELECT c.jid, c.name, c.last_message_time, NULL, NULL, NULL FROM chats c"
+
+
+def _chat_query(include_last_message: bool, where: str = "", suffix: str = "") -> str:
+    """Build a chat query, optionally joined to the message at
+    `last_message_time`."""
+    parts = [_CHAT_WITH_LAST_MESSAGE if include_last_message else _CHAT_ONLY]
+    if where:
+        parts.append(where)
+    if suffix:
+        parts.append(suffix)
+    return " ".join(parts)
 
 
 def format_message(message: Message, show_chat_info: bool = True) -> str:
@@ -48,54 +68,22 @@ def list_chats(
     conn = connect()
     try:
         cursor = conn.cursor()
-
-        # Build base query. Without the join there is no messages row to read
-        # the last-message columns from, so select NULLs in their place.
-        if include_last_message:
-            query_parts = ["""
-                SELECT
-                    chats.jid,
-                    chats.name,
-                    chats.last_message_time,
-                    messages.content as last_message,
-                    messages.sender as last_sender,
-                    messages.is_from_me as last_is_from_me
-                FROM chats
-                LEFT JOIN messages ON chats.jid = messages.chat_jid
-                AND chats.last_message_time = messages.timestamp
-            """]
-        else:
-            query_parts = ["""
-                SELECT
-                    chats.jid,
-                    chats.name,
-                    chats.last_message_time,
-                    NULL as last_message,
-                    NULL as last_sender,
-                    NULL as last_is_from_me
-                FROM chats
-            """]
-
-        where_clauses = []
-        params = []
+        where = ""
+        params: List[Any] = []
 
         if query:
-            where_clauses.append("(LOWER(chats.name) LIKE LOWER(?) OR chats.jid LIKE ?)")
+            where = "WHERE (LOWER(c.name) LIKE LOWER(?) OR c.jid LIKE ?)"
             params.extend([f"%{query}%", f"%{query}%"])
 
-        if where_clauses:
-            query_parts.append("WHERE " + " AND ".join(where_clauses))
+        order_by = "c.last_message_time DESC" if sort_by == "last_active" else "c.name"
+        params.extend([limit, page * limit])
 
-        # Add sorting
-        order_by = "chats.last_message_time DESC" if sort_by == "last_active" else "chats.name"
-        query_parts.append(f"ORDER BY {order_by}")
-
-        # Add pagination
-        offset = page * limit
-        query_parts.append("LIMIT ? OFFSET ?")
-        params.extend([limit, offset])
-
-        cursor.execute(" ".join(query_parts), tuple(params))
+        cursor.execute(
+            _chat_query(
+                include_last_message, where, f"ORDER BY {order_by} LIMIT ? OFFSET ?"
+            ),
+            tuple(params),
+        )
         chats = cursor.fetchall()
 
         result = []
@@ -254,35 +242,8 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]
     try:
         cursor = conn.cursor()
 
-        if include_last_message:
-            query = """
-                SELECT
-                    c.jid,
-                    c.name,
-                    c.last_message_time,
-                    m.content as last_message,
-                    m.sender as last_sender,
-                    m.is_from_me as last_is_from_me
-                FROM chats c
-                LEFT JOIN messages m ON c.jid = m.chat_jid
-                AND c.last_message_time = m.timestamp
-            """
-        else:
-            query = """
-                SELECT
-                    c.jid,
-                    c.name,
-                    c.last_message_time,
-                    NULL as last_message,
-                    NULL as last_sender,
-                    NULL as last_is_from_me
-                FROM chats c
-            """
-
-        query += " WHERE c.jid = ?"
-
         resolved_jid = resolve_chat_jid(cursor, canonical_jid(chat_jid))
-        cursor.execute(query, (resolved_jid,))
+        cursor.execute(_chat_query(include_last_message, "WHERE c.jid = ?"), (resolved_jid,))
         chat_data = cursor.fetchone()
 
         if not chat_data:
@@ -307,20 +268,12 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
     try:
         cursor = conn.cursor()
 
-        cursor.execute("""
-            SELECT
-                c.jid,
-                c.name,
-                c.last_message_time,
-                m.content as last_message,
-                m.sender as last_sender,
-                m.is_from_me as last_is_from_me
-            FROM chats c
-            LEFT JOIN messages m ON c.jid = m.chat_jid
-                AND c.last_message_time = m.timestamp
-            WHERE c.jid LIKE ? AND c.jid NOT LIKE '%@g.us'
-            LIMIT 1
-        """, (f"%{sender_phone_number}%",))
+        cursor.execute(
+            _chat_query(
+                True, "WHERE c.jid LIKE ? AND c.jid NOT LIKE '%@g.us'", "LIMIT 1"
+            ),
+            (f"%{sender_phone_number}%",),
+        )
 
         chat_data = cursor.fetchone()
 
