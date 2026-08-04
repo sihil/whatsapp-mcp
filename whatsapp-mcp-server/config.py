@@ -12,6 +12,7 @@ _DEFAULT_DB_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db'
 )
 _DEFAULT_API_BASE_URL = "http://localhost:8080/api"
+_DEFAULT_SEND_RATE_LIMIT = 30
 
 BRIDGE_DOWN_HINT = "is the WhatsApp bridge running? (cd whatsapp-bridge && go run .)"
 
@@ -55,6 +56,18 @@ def allowed_media_dirs() -> Optional[List[str]]:
     if not raw:
         return None
     return [os.path.realpath(entry) for entry in raw.split(os.pathsep) if entry]
+
+
+def send_rate_limit() -> int:
+    """Max outbound sends per rolling minute, from `WHATSAPP_MCP_SEND_RATE_LIMIT`
+    (default 30). `0` or negative disables the limiter."""
+    raw = os.environ.get("WHATSAPP_MCP_SEND_RATE_LIMIT")
+    if not raw:
+        return _DEFAULT_SEND_RATE_LIMIT
+    try:
+        return int(raw)
+    except ValueError:
+        return _DEFAULT_SEND_RATE_LIMIT
 
 
 configure_logging()

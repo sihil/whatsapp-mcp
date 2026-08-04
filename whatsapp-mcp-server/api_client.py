@@ -1,27 +1,71 @@
 """REST calls to the Go bridge (sends, media downloads, live group data).
 
 Send-path validation lives here rather than in the tool wrappers: recipient/
-media-path checks and the media directory allowlist apply regardless of
-caller. Validation failures raise ValueError; bridge communication failures
-come back as a (False, message) tuple for the caller to turn into a
-RuntimeError.
+media-path checks, the media directory allowlist, and the sliding-window
+rate limiter all apply regardless of caller. Validation failures raise
+ValueError; bridge communication failures come back as a (False, message)
+tuple for the caller to turn into a RuntimeError.
 """
 import json
 import logging
 import os
+import threading
+import time
+from collections import deque
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Deque, Dict, Optional, Tuple
 
 import requests
 
 import audio
-from config import BRIDGE_DOWN_HINT, allowed_media_dirs, api_base_url
+from config import BRIDGE_DOWN_HINT, allowed_media_dirs, api_base_url, send_rate_limit
 
 logger = logging.getLogger(__name__)
 
 # A /send call blocks for the bridge's entire upload to WhatsApp, so this
 # bounds a large media transfer over a slow link, not a quick round trip.
 _SEND_READ_TIMEOUT = 600
+
+_send_timestamps: Deque[float] = deque()
+_send_lock = threading.Lock()
+
+
+def _reserve_send_slot() -> Optional[float]:
+    """Claim a slot in the sliding send window, raising if this call would
+    exceed WHATSAPP_MCP_SEND_RATE_LIMIT sends in the trailing 60 seconds.
+    Shared by the three send tools; `<= 0` disables the limit.
+
+    Returns the recorded timestamp so a send that never reached the bridge can
+    hand the slot back via `_release_send_slot`, or None when disabled."""
+    limit = send_rate_limit()
+    if limit <= 0:
+        return None
+    now = time.monotonic()
+    window_start = now - 60
+    with _send_lock:
+        while _send_timestamps and _send_timestamps[0] < window_start:
+            _send_timestamps.popleft()
+        if len(_send_timestamps) >= limit:
+            raise RuntimeError(
+                f"Send rate limit exceeded ({limit}/min). Wait a moment and try again, "
+                "or raise WHATSAPP_MCP_SEND_RATE_LIMIT."
+            )
+        _send_timestamps.append(now)
+    return now
+
+
+def _release_send_slot(reserved: Optional[float]) -> None:
+    """Return a slot claimed by `_reserve_send_slot` after a send that never
+    reached the bridge. Without this, an outage burns the whole minute's
+    budget and the limiter then masks the real error for 60 seconds — even
+    after the bridge is back up."""
+    if reserved is None:
+        return
+    with _send_lock:
+        try:
+            _send_timestamps.remove(reserved)
+        except ValueError:
+            pass
 
 
 def _validate_media_path(media_path: str) -> str:
@@ -77,14 +121,19 @@ def _post(
 
 
 def _post_send(payload: Dict[str, str]) -> Tuple[bool, str]:
-    """POST to the bridge's /send endpoint and parse the result.
+    """Claim a rate-limit slot, POST to the bridge's /send endpoint, and parse
+    the result.
 
     The read timeout is generous because it covers the bridge's whole upload
     to WhatsApp: timing out early would report a send as failed while it is
     still in flight, and the caller's retry would deliver it twice.
     """
+    reserved = _reserve_send_slot()
     body, error = _post("/send", payload, timeout=(5, _SEND_READ_TIMEOUT))
     if body is None:
+        # The send never reached the bridge, so it should not count against
+        # the window.
+        _release_send_slot(reserved)
         return False, error
     return body.get("success", False), body.get("message", "Unknown response")
 
