@@ -35,8 +35,8 @@ def resolve_chat_jid(cursor, jid: Optional[str]) -> Optional[str]:
 
 
 def get_sender_name(sender_jid: str) -> str:
+    conn = connect()
     try:
-        conn = connect()
         cursor = conn.cursor()
 
         # First try matching by exact JID
@@ -71,9 +71,5 @@ def get_sender_name(sender_jid: str) -> str:
         else:
             return sender_jid
 
-    except sqlite3.Error as e:
-        print(f"Database error while getting sender name: {e}")
-        return sender_jid
     finally:
-        if 'conn' in locals():
-            conn.close()
+        conn.close()

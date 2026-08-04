@@ -1,5 +1,4 @@
 """Chat and contact queries against the bridge's message store."""
-import sqlite3
 from datetime import datetime
 from typing import List, Optional
 
@@ -22,11 +21,8 @@ def format_message(message: Message, show_chat_info: bool = True) -> str:
     else:
         content_prefix = f"[Message ID: {message.id}] "
 
-    try:
-        sender_name = get_sender_name(message.sender) if not message.is_from_me else "Me"
-        output += f"From: {sender_name}: {content_prefix}{message.content}\n"
-    except Exception as e:
-        print(f"Error formatting message: {e}")
+    sender_name = "Me" if message.is_from_me else get_sender_name(message.sender)
+    output += f"From: {sender_name}: {content_prefix}{message.content}\n"
     return output
 
 
@@ -49,8 +45,8 @@ def list_chats(
     sort_by: str = "last_active"
 ) -> List[Chat]:
     """Get chats matching the specified criteria."""
+    conn = connect()
     try:
-        conn = connect()
         cursor = conn.cursor()
 
         # Build base query
@@ -107,18 +103,14 @@ def list_chats(
 
         return result
 
-    except sqlite3.Error as e:
-        print(f"Database error: {e}")
-        return []
     finally:
-        if 'conn' in locals():
-            conn.close()
+        conn.close()
 
 
 def search_contacts(query: str) -> List[Contact]:
     """Search contacts by name or phone number."""
+    conn = connect()
     try:
-        conn = connect()
         cursor = conn.cursor()
 
         # Split query into characters to support partial matching
@@ -149,12 +141,8 @@ def search_contacts(query: str) -> List[Contact]:
 
         return result
 
-    except sqlite3.Error as e:
-        print(f"Database error: {e}")
-        return []
     finally:
-        if 'conn' in locals():
-            conn.close()
+        conn.close()
 
 
 def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
@@ -165,8 +153,8 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
         limit: Maximum number of chats to return (default 20)
         page: Page number for pagination (default 0)
     """
+    conn = connect()
     try:
-        conn = connect()
         cursor = conn.cursor()
 
         resolved_jid = resolve_chat_jid(cursor, canonical_jid(jid))
@@ -201,18 +189,14 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
 
         return result
 
-    except sqlite3.Error as e:
-        print(f"Database error: {e}")
-        return []
     finally:
-        if 'conn' in locals():
-            conn.close()
+        conn.close()
 
 
 def get_last_interaction(jid: str) -> Optional[str]:
     """Get most recent message involving the contact."""
+    conn = connect()
     try:
-        conn = connect()
         cursor = conn.cursor()
 
         resolved_jid = resolve_chat_jid(cursor, canonical_jid(jid))
@@ -251,18 +235,14 @@ def get_last_interaction(jid: str) -> Optional[str]:
 
         return format_message(message)
 
-    except sqlite3.Error as e:
-        print(f"Database error: {e}")
-        return None
     finally:
-        if 'conn' in locals():
-            conn.close()
+        conn.close()
 
 
 def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]:
     """Get chat metadata by JID."""
+    conn = connect()
     try:
-        conn = connect()
         cursor = conn.cursor()
 
         query = """
@@ -300,18 +280,14 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]
             last_is_from_me=chat_data[5]
         )
 
-    except sqlite3.Error as e:
-        print(f"Database error: {e}")
-        return None
     finally:
-        if 'conn' in locals():
-            conn.close()
+        conn.close()
 
 
 def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
     """Get chat metadata by sender phone number."""
+    conn = connect()
     try:
-        conn = connect()
         cursor = conn.cursor()
 
         cursor.execute("""
@@ -343,9 +319,5 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
             last_is_from_me=chat_data[5]
         )
 
-    except sqlite3.Error as e:
-        print(f"Database error: {e}")
-        return None
     finally:
-        if 'conn' in locals():
-            conn.close()
+        conn.close()

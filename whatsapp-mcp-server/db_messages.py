@@ -1,7 +1,6 @@
 """Message queries against the bridge's message store."""
-import sqlite3
 from datetime import datetime
-from typing import List, Optional
+from typing import Optional
 
 from db import canonical_jid, connect, resolve_chat_jid
 from db_chats import format_messages_list
@@ -21,8 +20,8 @@ def list_messages(
     context_after: int = 1
 ) -> str:
     """Get messages matching the specified criteria with optional context."""
+    conn = connect()
     try:
-        conn = connect()
         cursor = conn.cursor()
 
         # Build base query
@@ -104,12 +103,8 @@ def list_messages(
         # Format and display messages without context
         return format_messages_list(result, show_chat_info=True)
 
-    except sqlite3.Error as e:
-        print(f"Database error: {e}")
-        return []
     finally:
-        if 'conn' in locals():
-            conn.close()
+        conn.close()
 
 
 def get_message_context(
@@ -121,8 +116,8 @@ def get_message_context(
     """Get context around a specific message. Message IDs are only unique per
     chat ((id, chat_jid) is the primary key), so pass chat_jid to disambiguate
     when known."""
+    conn = connect()
     try:
-        conn = connect()
         cursor = conn.cursor()
 
         # Get the target message first
@@ -205,9 +200,5 @@ def get_message_context(
             after=after_messages
         )
 
-    except sqlite3.Error as e:
-        print(f"Database error: {e}")
-        raise
     finally:
-        if 'conn' in locals():
-            conn.close()
+        conn.close()
