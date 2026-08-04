@@ -49,8 +49,12 @@ uv run main.py
 
 - `messages.db` — read directly by this server (`db.py`). Default location:
   `../whatsapp-bridge/store/messages.db`, resolved relative to this directory.
-  Contains the `chats`, `messages`, and `jid_aliases` tables written by the Go
-  bridge. Override with `WHATSAPP_MCP_DB_PATH`.
+  Contains the `chats`, `messages`, `jid_aliases`, and `contacts` tables
+  written by the Go bridge. Override with `WHATSAPP_MCP_DB_PATH`.
+
+  Sender and chat names come from `contacts`, falling back to `chats`. A store
+  written by a bridge that predates that table still works — senders just show
+  as JIDs until the bridge is restarted, which creates and backfills it.
 - Everything else (sending messages/media, downloading media, listing group
   members) goes over HTTP to the bridge's REST API, not to any local file.
 
@@ -80,7 +84,9 @@ render as a playable voice message).
 - `config.py` — env var reads, logging setup.
 - `tools_read.py` / `tools_send.py` — the `@mcp.tool()` wrappers.
 - `models.py` — dataclasses for messages/chats/contacts.
-- `db.py`, `db_chats.py`, `db_messages.py` — SQLite read layer.
+- `db.py`, `db_chats.py`, `db_contacts.py`, `db_messages.py` — SQLite read
+  layer. `db_contacts.py` holds the people-oriented lookups (finding a
+  contact, the chats they appear in) and builds on `db_chats.chat_query`.
 - `api_client.py` — REST calls to the bridge (send/download/group members),
   rate limiting, media-path validation.
 - `whatsapp.py` — thin façade re-exporting the public functions for backward

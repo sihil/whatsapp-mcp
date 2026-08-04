@@ -19,7 +19,7 @@ Two cooperating processes; both must be running for the system to work:
    - `main.py` / `server.py` — entrypoint and the shared `FastMCP` instance
    - `config.py` — env var reads (DB path, bridge URL, media allowlist, rate limit, log level) and logging setup
    - `tools_read.py` / `tools_send.py` — the `@mcp.tool()` wrappers, one per tool
-   - `models.py`, `db.py`/`db_chats.py`/`db_messages.py` — dataclasses and the SQLite read layer
+   - `models.py`, `db.py`/`db_chats.py`/`db_contacts.py`/`db_messages.py` — dataclasses and the SQLite read layer
    - `api_client.py` — REST calls to the bridge, send rate limiting, media-path validation
    - `whatsapp.py` — thin façade re-exporting the public functions for backward-compatible imports
    - `audio.py` — FFmpeg conversion of audio to `.ogg` Opus for voice messages
@@ -30,14 +30,15 @@ Two cooperating processes; both must be running for the system to work:
 
 Other env vars (all read in `config.py`): `WHATSAPP_MCP_ALLOWED_MEDIA_DIRS` (allowlist for outbound media paths, separated by `os.pathsep` — `:` on Unix, `;` on Windows; unset = any existing file), `WHATSAPP_MCP_SEND_RATE_LIMIT` (max sends/minute across the three send tools, default 30, `0` disables), `WHATSAPP_MCP_LOG_LEVEL` (stderr log level, default INFO — stdout carries only JSON-RPC).
 
-**Adding a tool that needs live WhatsApp data touches four places** (see recent group-members commits as a template): an endpoint handler in `whatsapp-bridge/main.go`, an implementation function in `whatsapp-mcp-server/api_client.py` that calls it, a re-export in `whatsapp.py`, and an `@mcp.tool()` wrapper in `tools_send.py` (read-only tools go in `tools_read.py`, backed by `db_chats.py`/`db_messages.py`).
+**Adding a tool that needs live WhatsApp data touches four places** (see recent group-members commits as a template): an endpoint handler in `whatsapp-bridge/main.go`, an implementation function in `whatsapp-mcp-server/api_client.py` that calls it, a re-export in `whatsapp.py`, and an `@mcp.tool()` wrapper in `tools_send.py` (read-only tools go in `tools_read.py`, backed by `db_chats.py`/`db_contacts.py`/`db_messages.py`).
 
 ### Storage
 
-- `whatsapp-bridge/store/messages.db` — chats + messages + jid_aliases tables (created by `NewMessageStore` in `main.go`; schema changes go there)
+- `whatsapp-bridge/store/messages.db` — chats + messages + jid_aliases + contacts tables (created by `NewMessageStore` in `main.go`; schema changes go there)
 - `whatsapp-bridge/store/whatsapp.db` — whatsmeow session/device state
 - Both are gitignored. Deleting both forces re-authentication and a fresh history sync.
 - Media is stored as metadata only (url, media_key, hashes); actual files are fetched on demand via the `download_media` tool.
+- **Contact names** (`whatsapp-bridge/contacts.go`): the `contacts` table maps a canonical PN JID to `full_name`/`push_name`/`business_name`. Without it a group participant is nameless, because `chats` holds a row per *conversation*, not per person. Three writers fill it — a backfill from whatsmeow's contact store at every startup, `msg.Info.PushName` on each incoming message, and the group-members endpoint — and each upserts only the columns it knows, so a push name never overwrites an address-book name. **A name that is nothing but digits is not a name.** `GetChatName` used to fall back to `jid.User`, and the read layer cannot tell such a value from a real name, so it stops its fallback chain on it; both sides now reject them and the startup migration clears the stored ones.
 - **JID canonicalization** (`whatsapp-bridge/identity.go`): `messages.sender` and `chat_jid` always hold full `user@server` JIDs, phone-number namespace preferred, `@lid` only when the PN↔LID mapping is unknown, own PN JID for `is_from_me` rows. An idempotent migration runs at every bridge startup to canonicalize legacy rows and merge `@lid`-keyed DM chats into their PN keys; renamed chat keys leave a row in `jid_aliases` that the Python read layer follows for stale keys. Don't write raw `msg.Info` JIDs to the DB — go through the `canonical*` helpers.
 
 ## Commands
