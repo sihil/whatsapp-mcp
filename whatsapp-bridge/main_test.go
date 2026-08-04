@@ -25,12 +25,19 @@ func TestResolveStoredChatJID(t *testing.T) {
 	if _, err := db.Exec(`CREATE TABLE messages (id TEXT, chat_jid TEXT, PRIMARY KEY (id, chat_jid))`); err != nil {
 		t.Fatalf("creating table: %v", err)
 	}
+	if _, err := db.Exec(`CREATE TABLE jid_aliases (old_jid TEXT PRIMARY KEY, new_jid TEXT NOT NULL)`); err != nil {
+		t.Fatalf("creating alias table: %v", err)
+	}
 	store := &MessageStore{db: db}
 
 	pnKey := types.JID{User: "16465559999", Server: types.DefaultUserServer}
 	lidKey := types.JID{User: "74616466886757", Server: types.HiddenUserServer}
+	legacyKey := types.JID{User: "16465559999", Server: "c.us"}
 	if _, err := db.Exec("INSERT INTO messages (id, chat_jid) VALUES ('MSG1', ?)", pnKey.String()); err != nil {
 		t.Fatalf("inserting row: %v", err)
+	}
+	if _, err := db.Exec("INSERT INTO jid_aliases (old_jid, new_jid) VALUES (?, ?)", legacyKey.String(), pnKey.String()); err != nil {
+		t.Fatalf("inserting alias: %v", err)
 	}
 	alts := fakeAltResolver{alt: map[string]types.JID{
 		lidKey.String(): pnKey,
@@ -44,6 +51,7 @@ func TestResolveStoredChatJID(t *testing.T) {
 	}{
 		{"message under given key keeps the key even when an alt is mapped", pnKey, pnKey},
 		{"stale alternate-namespace key resolves to the stored key", lidKey, pnKey},
+		{"renamed key follows its jid_aliases row", legacyKey, pnKey},
 		{"unknown key with no alt mapping is returned unchanged", types.JID{User: "19998887777", Server: types.DefaultUserServer}, types.JID{User: "19998887777", Server: types.DefaultUserServer}},
 	}
 	for _, tt := range tests {

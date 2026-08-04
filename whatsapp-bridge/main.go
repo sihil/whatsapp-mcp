@@ -750,6 +750,17 @@ func resolveStoredChatJID(ctx context.Context, alts altJIDResolver, store *Messa
 	if err != sql.ErrNoRows {
 		return chatJID
 	}
+	// The startup migration records every chat key it renames (legacy-server
+	// renames, @lid merges) in jid_aliases; that maps straight to the current
+	// key, so consult it before the PN<->LID store.
+	var aliased string
+	if store.db.QueryRow(
+		"SELECT new_jid FROM jid_aliases WHERE old_jid = ?", chatJID.String(),
+	).Scan(&aliased) == nil {
+		if jid, parseErr := types.ParseJID(aliased); parseErr == nil {
+			return jid
+		}
+	}
 	if alt, altErr := alts.GetAltJID(ctx, chatJID); altErr == nil && !alt.IsEmpty() {
 		return alt
 	}
