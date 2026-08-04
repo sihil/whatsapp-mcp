@@ -11,6 +11,16 @@ def connect() -> sqlite3.Connection:
     return sqlite3.connect(MESSAGES_DB_PATH)
 
 
+def escape_like(term: str, escape_char: str = "\\") -> str:
+    """Escape a user-supplied fragment for safe use inside a LIKE pattern.
+    Pair with `LIKE ? ESCAPE '\\'` in the SQL."""
+    return (
+        term.replace(escape_char, escape_char * 2)
+        .replace("%", f"{escape_char}%")
+        .replace("_", f"{escape_char}_")
+    )
+
+
 def canonical_jid(identifier: str) -> str:
     """Normalize a bare phone number to the canonical JID form the bridge
     stores (full user@server strings, phone-number namespace preferred)."""
@@ -60,9 +70,9 @@ def get_sender_name(sender_jid: str) -> str:
             cursor.execute("""
                 SELECT name
                 FROM chats
-                WHERE jid LIKE ?
+                WHERE jid LIKE ? ESCAPE '\\'
                 LIMIT 1
-            """, (f"%{phone_part}%",))
+            """, (f"%{escape_like(phone_part)}%",))
 
             result = cursor.fetchone()
 

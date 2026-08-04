@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Any, List, Optional
 
-from db import canonical_jid, connect, get_sender_name, resolve_chat_jid
+from db import canonical_jid, connect, escape_like, get_sender_name, resolve_chat_jid
 from models import Chat, Contact, Message
 
 _CHAT_WITH_LAST_MESSAGE = """
@@ -79,8 +79,9 @@ def list_chats(
         params: List[Any] = []
 
         if query:
-            where = "WHERE (LOWER(c.name) LIKE LOWER(?) OR c.jid LIKE ?)"
-            params.extend([f"%{query}%", f"%{query}%"])
+            escaped_query = escape_like(query)
+            where = "WHERE (LOWER(c.name) LIKE LOWER(?) ESCAPE '\\' OR c.jid LIKE ? ESCAPE '\\')"
+            params.extend([f"%{escaped_query}%", f"%{escaped_query}%"])
 
         order_by = "c.last_message_time DESC" if sort_by == "last_active" else "c.name"
         params.extend([limit, page * limit])
@@ -117,8 +118,7 @@ def search_contacts(query: str) -> List[Contact]:
     try:
         cursor = conn.cursor()
 
-        # Split query into characters to support partial matching
-        search_pattern = '%' + query + '%'
+        search_pattern = '%' + escape_like(query) + '%'
 
         cursor.execute("""
             SELECT DISTINCT
@@ -126,7 +126,7 @@ def search_contacts(query: str) -> List[Contact]:
                 name
             FROM chats
             WHERE
-                (LOWER(name) LIKE LOWER(?) OR LOWER(jid) LIKE LOWER(?))
+                (LOWER(name) LIKE LOWER(?) ESCAPE '\\' OR LOWER(jid) LIKE LOWER(?) ESCAPE '\\')
                 AND jid NOT LIKE '%@g.us'
             ORDER BY name, jid
             LIMIT 50
@@ -272,9 +272,11 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
 
         cursor.execute(
             _chat_query(
-                True, "WHERE c.jid LIKE ? AND c.jid NOT LIKE '%@g.us'", "LIMIT 1"
+                True,
+                "WHERE c.jid LIKE ? ESCAPE '\\' AND c.jid NOT LIKE '%@g.us'",
+                "LIMIT 1",
             ),
-            (f"%{sender_phone_number}%",),
+            (f"%{escape_like(sender_phone_number)}%",),
         )
 
         chat_data = cursor.fetchone()

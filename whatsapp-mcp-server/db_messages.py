@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Optional
 
-from db import canonical_jid, connect, resolve_chat_jid
+from db import canonical_jid, connect, escape_like, resolve_chat_jid
 from db_chats import format_messages_list
 from models import Message, MessageContext
 
@@ -60,8 +60,8 @@ def list_messages(
             params.append(resolve_chat_jid(cursor, chat_jid))
 
         if query:
-            where_clauses.append("LOWER(messages.content) LIKE LOWER(?)")
-            params.append(f"%{query}%")
+            where_clauses.append("LOWER(messages.content) LIKE LOWER(?) ESCAPE '\\'")
+            params.append(f"%{escape_like(query)}%")
 
         if where_clauses:
             query_parts.append("WHERE " + " AND ".join(where_clauses))
