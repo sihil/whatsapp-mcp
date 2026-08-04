@@ -10,7 +10,7 @@ WhatsApp MCP server: lets an MCP client (Claude Desktop, Cursor) search/read per
 
 Two cooperating processes; both must be running for the system to work:
 
-1. **`whatsapp-bridge/`** — Go application (`main.go`: bridge, REST API, message store; `identity.go`: JID canonicalization; Go tests alongside) using [whatsmeow](https://github.com/tulir/whatsmeow). Connects to WhatsApp, authenticates via QR code, stores message history in SQLite, and exposes a REST API on `localhost:8080`:
+1. **`whatsapp-bridge/`** — Go application (`main.go`: bridge, REST API, message store; `identity.go`: JID canonicalization; Go tests alongside) using [whatsmeow](https://github.com/tulir/whatsmeow). Connects to WhatsApp, authenticates via QR code (or a pairing code via `-pair-phone`, see Commands/Gotchas), stores message history in SQLite, and exposes a REST API on `localhost:8080`:
    - `POST /api/send` — send a text message or media file; optional `reply_to` (a message ID) sends it as a quoted reply
    - `POST /api/download` — download media from a message to disk
    - `POST /api/group/members` — list group members (with contact-name lookup)
@@ -40,6 +40,8 @@ Two cooperating processes; both must be running for the system to work:
 # Run the Go bridge (must run from whatsapp-bridge/ so store/ resolves correctly)
 cd whatsapp-bridge && go run .
 
+cd whatsapp-bridge && go run . -pair-phone 15551234567  # pair by 8-char code instead of QR
+
 # Run the bridge tests
 cd whatsapp-bridge && go test ./...
 
@@ -54,7 +56,7 @@ Python deps are managed with `uv` (`pyproject.toml` + `uv.lock`, Python ≥3.11)
 
 ## Gotchas
 
-- First bridge run prints a QR code to scan with the WhatsApp mobile app; re-auth is needed roughly every 20 days. If messages get out of sync, delete both files in `whatsapp-bridge/store/` and restart the bridge. The bridge appears as "WhatsApp MCP Bridge" in the phone's Linked Devices list — this needs both `DeviceProps.Os` and `DeviceProps.PlatformType` set (the phone shows "Other device" when PlatformType is UNKNOWN), and only takes effect at pairing time.
+- First bridge run prints a QR code to scan with the WhatsApp mobile app; re-auth is needed roughly every 20 days. If messages get out of sync, delete both files in `whatsapp-bridge/store/` and restart the bridge. Pass `-pair-phone <number>` (country code, digits only, no `+`) to get an 8-character code to type into the phone instead of scanning a QR — useful for headless re-auth. Ignored if a session already exists. The bridge appears as "WhatsApp MCP Bridge" in the phone's Linked Devices list — this needs both `DeviceProps.Os` and `DeviceProps.PlatformType` set (the phone shows "Other device" when PlatformType is UNKNOWN), and only takes effect at pairing time.
 - A `Client outdated (405) connect failure` on startup means the pinned whatsmeow is too old — it embeds a WhatsApp Web client version that WhatsApp's servers reject after a few months. Fix: `go get go.mau.fi/whatsmeow@latest && go mod tidy` in `whatsapp-bridge/`. This recurs periodically.
 - `go-sqlite3` requires CGO; on Windows CGO is disabled by default (`go env -w CGO_ENABLED=1` plus a C compiler).
 - FFmpeg is optional and only needed by `send_audio_message` to convert non-Opus audio; without it, raw audio can still be sent via `send_file`.

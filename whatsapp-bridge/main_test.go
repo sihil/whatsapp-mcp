@@ -145,3 +145,22 @@ func TestGetMessageForReply(t *testing.T) {
 		t.Errorf("empty id lookup: err = %v, want sql.ErrNoRows", err)
 	}
 }
+
+func TestPairDisplayName(t *testing.T) {
+	tests := []struct {
+		goos string
+		want string
+	}{
+		{"darwin", "Chrome (Mac OS)"},
+		{"windows", "Chrome (Windows)"},
+		{"linux", "Chrome (Linux)"},
+		{"freebsd", "Chrome (Linux)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.goos, func(t *testing.T) {
+			if got := pairDisplayName(tt.goos); got != tt.want {
+				t.Errorf("pairDisplayName(%q) = %q, want %q", tt.goos, got, tt.want)
+			}
+		})
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"math"
 	"math/rand"
@@ -13,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -1057,7 +1059,29 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 	}()
 }
 
+// pairDisplayName returns the client display name sent with a pairing-code
+// request. WhatsApp's server validates it against a short list of
+// "Browser (OS)" names, so only the OS half can honestly vary — the browser
+// half must stay in sync with the whatsmeow.PairClientChrome constant passed
+// to PairPhone.
+func pairDisplayName(goos string) string {
+	switch goos {
+	case "darwin":
+		return "Chrome (Mac OS)"
+	case "windows":
+		return "Chrome (Windows)"
+	default:
+		return "Chrome (Linux)"
+	}
+}
+
 func main() {
+	// Optional pairing-code auth: pass a phone number to pair via an 8-character
+	// code instead of scanning a QR.
+	pairPhone := flag.String("pair-phone", "", "phone number (international format, digits only, no +) to pair via 8-character code instead of QR")
+	flag.Parse()
+	usingPairCode := *pairPhone != ""
+
 	// Set up logger
 	logger := waLog.Stdout("Client", "INFO", true)
 	logger.Infof("Starting WhatsApp client...")
@@ -1139,9 +1163,6 @@ func main() {
 		}
 	})
 
-	// Create channel to track connection success
-	connected := make(chan bool, 1)
-
 	// Connect to WhatsApp
 	if client.Store.ID == nil {
 		// No ID stored, this is a new client, need to pair with phone
@@ -1152,33 +1173,51 @@ func main() {
 			return
 		}
 
-		// Print QR code for pairing with phone
+		if usingPairCode {
+			// PairPhone needs the login socket ready; per whatsmeow's docs, the
+			// first QR channel item signals that. Request the code exactly once —
+			// re-requesting would invalidate the previous code.
+			if evt, ok := <-qrChan; !ok || evt.Event != "code" {
+				logger.Errorf("Login failed before a pairing code could be requested (event %q): %v", evt.Event, evt.Error)
+				return
+			}
+			code, perr := client.PairPhone(context.Background(), *pairPhone, true, whatsmeow.PairClientChrome, pairDisplayName(runtime.GOOS))
+			if perr != nil {
+				logger.Errorf("Failed to get pairing code: %v", perr)
+				return
+			}
+			fmt.Printf("\nPairing code: %s\nOn your phone: WhatsApp > Settings > Linked Devices > Link a Device > Link with phone number instead\n", code)
+		}
+
+		// The channel emits fresh QR codes until pairing succeeds or a terminal
+		// event (timeout, err-client-outdated, ...) closes it.
+		authenticated := false
+		var lastEvt whatsmeow.QRChannelItem
 		for evt := range qrChan {
-			if evt.Event == "code" {
+			lastEvt = evt
+			if evt.Event == "code" && !usingPairCode {
 				fmt.Println("\nScan this QR code with your WhatsApp app:")
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
 			} else if evt.Event == "success" {
-				connected <- true
+				authenticated = true
 				break
 			}
 		}
-
-		// Wait for connection
-		select {
-		case <-connected:
-			fmt.Println("\nSuccessfully connected and authenticated!")
-		case <-time.After(3 * time.Minute):
-			logger.Errorf("Timeout waiting for QR code scan")
+		if !authenticated {
+			logger.Errorf("Login did not complete (last event %q): %v", lastEvt.Event, lastEvt.Error)
 			return
 		}
+		fmt.Println("\nSuccessfully connected and authenticated!")
 	} else {
 		// Already logged in, just connect
+		if usingPairCode {
+			logger.Warnf("Ignoring -pair-phone: a session already exists; delete store/whatsapp.db to re-pair")
+		}
 		err = client.Connect()
 		if err != nil {
 			logger.Errorf("Failed to connect: %v", err)
 			return
 		}
-		connected <- true
 	}
 
 	// Wait a moment for connection to stabilize

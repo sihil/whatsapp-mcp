@@ -46,6 +46,16 @@ Here's an example of what you can do when it's connected to Claude.
 
    After approximately 20 days, you will might need to re-authenticate.
 
+   **Alternative: pairing code (no QR scan)**
+
+   If you'd rather not scan a QR code — for example on a headless machine — pass your phone number to pair via an 8-character code instead:
+
+   ```bash
+   go run . -pair-phone 15551234567
+   ```
+
+   Use international format, digits only, no `+`. The bridge prints an 8-character code; enter it on your phone under WhatsApp > Settings > Linked Devices > Link a Device > "Link with phone number instead". This works for both first-time auth and the periodic re-authentication above.
+
 3. **Connect to the MCP server**
 
    Copy the below json with the appropriate {{PATH}} values:
@@ -174,7 +184,7 @@ By default, just the metadata of the media is stored in the local database. The 
 
 ### Authentication Issues
 
-- **QR Code Not Displaying**: If the QR code doesn't appear, try restarting the authentication script. If issues persist, check if your terminal supports displaying QR codes.
+- **QR Code Not Displaying**: If the QR code doesn't appear, try restarting the authentication script. If issues persist, check if your terminal supports displaying QR codes, or use the pairing-code alternative described above (`go run . -pair-phone <number>`), which is also handy for headless setups.
 - **WhatsApp Already Logged In**: If your session is already active, the Go bridge will automatically reconnect without showing a QR code.
 - **Device Limit Reached**: WhatsApp limits the number of linked devices. If you reach this limit, you'll need to remove an existing device from WhatsApp on your phone (Settings > Linked Devices).
 - **No Messages Loading**: After initial authentication, it can take several minutes for your message history to load, especially if you have many chats.
