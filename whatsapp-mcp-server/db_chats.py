@@ -234,27 +234,65 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]
         conn.close()
 
 
+def _phone_digits(value: str) -> str:
+    """Digits of the user part of a phone number or JID ("+1 (646) 555-9999"
+    and "16465559999@s.whatsapp.net" both yield "16465559999")."""
+    return "".join(char for char in value.split("@")[0] if char.isdigit())
+
+
 def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
-    """Get chat metadata by sender phone number."""
+    """Get direct (non-group) chat metadata by contact phone number, matching
+    the JID's user part exactly before falling back to a suffix match."""
+    digits = _phone_digits(sender_phone_number or "")
+    if not digits:
+        raise ValueError(f"No digits in phone number: {sender_phone_number!r}")
+
     conn = connect()
     try:
         cursor = conn.cursor()
-
+        canonical = f"{digits}@s.whatsapp.net"
+        candidates = alias_candidates(cursor, canonical)
         cursor.execute(
             _chat_query(
                 True,
-                "WHERE c.jid LIKE ? ESCAPE '\\' AND c.jid NOT LIKE '%@g.us'",
-                "LIMIT 1",
+                f"WHERE c.jid IN ({placeholders(candidates)}) AND c.jid NOT LIKE '%@g.us'",
             ),
-            (f"%{escape_like(sender_phone_number)}%",),
+            tuple(candidates),
         )
+        rows = cursor.fetchall()
 
-        chat_data = cursor.fetchone()
+        if not rows:
+            cursor.execute(
+                _chat_query(
+                    True,
+                    "WHERE c.jid NOT LIKE '%@g.us' "
+                    "AND substr(c.jid, 1, instr(c.jid, '@') - 1) LIKE ? ESCAPE '\\'",
+                ),
+                (f"%{escape_like(digits)}",),
+            )
+            rows = cursor.fetchall()
+            matched_jids = sorted({row[0] for row in rows})
+            if len(matched_jids) > 1:
+                raise ValueError(
+                    f"Multiple direct chats end with {digits}: {', '.join(matched_jids)}. "
+                    "Pass the full JID to get_chat instead."
+                )
+            if matched_jids:
+                # A suffix match can land on a stale key (an @lid chat the
+                # bridge has since merged); follow it to the surviving row.
+                merged_jid = resolve_chat_jid(cursor, matched_jids[0])
+                if merged_jid != matched_jids[0]:
+                    cursor.execute(_chat_query(True, "WHERE c.jid = ?"), (merged_jid,))
+                    merged_rows = cursor.fetchall()
+                    if merged_rows:
+                        rows = merged_rows
 
-        if not chat_data:
+        if not rows:
             return None
 
-        return chat_from_row(chat_data)
+        resolved = resolve_chat_jid(cursor, canonical)
+        row = next((candidate for candidate in rows if candidate[0] == resolved), rows[0])
+        return chat_from_row(row)
 
     finally:
         conn.close()
