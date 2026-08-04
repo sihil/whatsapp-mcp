@@ -158,12 +158,12 @@ func (store *MessageStore) GetMessages(chatJID string, limit int) ([]Message, er
 // GetMessageForReply looks up a stored message by id and chat JID, returning
 // the fields needed to build a quoted-reply ContextInfo. Returns
 // sql.ErrNoRows if no such message exists in that chat.
-func (store *MessageStore) GetMessageForReply(id, chatJID string) (sender string, content string, isFromMe bool, err error) {
+func (store *MessageStore) GetMessageForReply(id, chatJID string) (sender string, content string, mediaType string, isFromMe bool, err error) {
 	err = store.db.QueryRow(
-		"SELECT sender, content, is_from_me FROM messages WHERE id = ? AND chat_jid = ?",
+		"SELECT sender, content, media_type, is_from_me FROM messages WHERE id = ? AND chat_jid = ?",
 		id, chatJID,
-	).Scan(&sender, &content, &isFromMe)
-	return sender, content, isFromMe, err
+	).Scan(&sender, &content, &mediaType, &isFromMe)
+	return sender, content, mediaType, isFromMe, err
 }
 
 // Get all chats
@@ -248,6 +248,17 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 
 	msg := &waProto.Message{}
 
+	// Resolve the quoted-reply context up front so both the text and the
+	// media branches can attach it.
+	var replyCtx *waProto.ContextInfo
+	if replyTo != "" {
+		var errMsg string
+		replyCtx, errMsg = resolveReplyContext(client, messageStore, recipientJID, replyTo)
+		if errMsg != "" {
+			return false, errMsg
+		}
+	}
+
 	// Check if we have media to send
 	if mediaPath != "" {
 		// Read media file
@@ -312,6 +323,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 		case whatsmeow.MediaImage:
 			msg.ImageMessage = &waProto.ImageMessage{
 				Caption:       proto.String(message),
+				ContextInfo:   replyCtx,
 				Mimetype:      proto.String(mimeType),
 				URL:           &resp.URL,
 				DirectPath:    &resp.DirectPath,
@@ -339,6 +351,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 			}
 
 			msg.AudioMessage = &waProto.AudioMessage{
+				ContextInfo:   replyCtx,
 				Mimetype:      proto.String(mimeType),
 				URL:           &resp.URL,
 				DirectPath:    &resp.DirectPath,
@@ -353,6 +366,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 		case whatsmeow.MediaVideo:
 			msg.VideoMessage = &waProto.VideoMessage{
 				Caption:       proto.String(message),
+				ContextInfo:   replyCtx,
 				Mimetype:      proto.String(mimeType),
 				URL:           &resp.URL,
 				DirectPath:    &resp.DirectPath,
@@ -365,6 +379,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 			msg.DocumentMessage = &waProto.DocumentMessage{
 				Title:         proto.String(mediaPath[strings.LastIndex(mediaPath, "/")+1:]),
 				Caption:       proto.String(message),
+				ContextInfo:   replyCtx,
 				Mimetype:      proto.String(mimeType),
 				URL:           &resp.URL,
 				DirectPath:    &resp.DirectPath,
@@ -374,31 +389,10 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 				FileLength:    &resp.FileLength,
 			}
 		}
-	} else if replyTo != "" {
-		// DM chats can be keyed under either addressing namespace
-		// (phone number vs LID), so retry the lookup with the mapped
-		// alternate key before concluding the target doesn't exist.
-		chatKey := recipientJID
-		sender, content, isFromMe, err := messageStore.GetMessageForReply(replyTo, chatKey.String())
-		if err == sql.ErrNoRows {
-			if alt, altErr := client.Store.GetAltJID(context.Background(), recipientJID); altErr == nil && !alt.IsEmpty() {
-				chatKey = alt
-				sender, content, isFromMe, err = messageStore.GetMessageForReply(replyTo, chatKey.String())
-			}
-		}
-		if err == sql.ErrNoRows {
-			return false, "Reply target message not found in chat"
-		}
-		if err != nil {
-			return false, fmt.Sprintf("Error looking up reply target: %v", err)
-		}
-
-		participant := resolveReplyParticipant(context.Background(), client.Store.LIDs,
-			sender, isFromMe, chatKey, client.Store.GetJID().ToNonAD())
-
+	} else if replyCtx != nil {
 		msg.ExtendedTextMessage = &waProto.ExtendedTextMessage{
 			Text:        proto.String(message),
-			ContextInfo: buildReplyContextInfo(replyTo, participant, content),
+			ContextInfo: replyCtx,
 		}
 	} else {
 		msg.Conversation = proto.String(message)
@@ -746,12 +740,44 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	return true, mediaType, filename, absPath, nil
 }
 
-// buildReplyContextInfo builds the ContextInfo for a quoted-reply
-// ExtendedTextMessage from a row read from messages.db.
-func buildReplyContextInfo(id string, participant types.JID, content string) *waProto.ContextInfo {
+// resolveReplyContext looks up the reply target message and builds the
+// quoted-reply ContextInfo. DM chats can be keyed under either addressing
+// namespace (phone number vs LID), so the lookup retries with the mapped
+// alternate key before concluding the target doesn't exist. Returns a
+// non-empty errMsg on failure.
+func resolveReplyContext(client *whatsmeow.Client, messageStore *MessageStore, recipientJID types.JID, replyTo string) (ctx *waProto.ContextInfo, errMsg string) {
+	chatKey := recipientJID
+	sender, content, mediaType, isFromMe, err := messageStore.GetMessageForReply(replyTo, chatKey.String())
+	if err == sql.ErrNoRows {
+		if alt, altErr := client.Store.GetAltJID(context.Background(), recipientJID); altErr == nil && !alt.IsEmpty() {
+			chatKey = alt
+			sender, content, mediaType, isFromMe, err = messageStore.GetMessageForReply(replyTo, chatKey.String())
+		}
+	}
+	if err == sql.ErrNoRows {
+		return nil, "Reply target message not found in chat"
+	}
+	if err != nil {
+		return nil, fmt.Sprintf("Error looking up reply target: %v", err)
+	}
+
+	participant := resolveReplyParticipant(context.Background(), client.Store.LIDs,
+		sender, isFromMe, chatKey, client.Store.GetJID().ToNonAD())
+
+	return buildReplyContextInfo(replyTo, participant, content, mediaType), ""
+}
+
+// buildReplyContextInfo builds the ContextInfo for a quoted reply. Content-less
+// rows (media messages without a caption) quote a placeholder derived from the
+// stored media type.
+func buildReplyContextInfo(id string, participant types.JID, content, mediaType string) *waProto.ContextInfo {
 	quotedText := content
 	if quotedText == "" {
-		quotedText = "[media]"
+		if mediaType != "" {
+			quotedText = "[" + mediaType + "]"
+		} else {
+			quotedText = "[media]"
+		}
 	}
 
 	return &waProto.ContextInfo{
@@ -870,11 +896,6 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 
 		if req.Message == "" && req.MediaPath == "" {
 			http.Error(w, "Message or media path is required", http.StatusBadRequest)
-			return
-		}
-
-		if req.ReplyTo != "" && req.MediaPath != "" {
-			http.Error(w, "reply_to cannot be combined with media_path", http.StatusBadRequest)
 			return
 		}
 
