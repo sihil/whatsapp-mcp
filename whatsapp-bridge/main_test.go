@@ -1,94 +1,11 @@
 package main
 
 import (
-	"context"
 	"database/sql"
 	"testing"
 
 	"go.mau.fi/whatsmeow/types"
 )
-
-type fakeLIDMapper struct {
-	pnForLID map[string]types.JID
-}
-
-func (f fakeLIDMapper) GetPNForLID(_ context.Context, lid types.JID) (types.JID, error) {
-	return f.pnForLID[lid.String()], nil
-}
-
-func TestResolveReplyParticipant(t *testing.T) {
-	groupJID := types.JID{User: "120363000000000000", Server: types.GroupServer}
-	dmJID := types.JID{User: "16465559999", Server: types.DefaultUserServer}
-	ownJID := types.JID{User: "15550001111", Server: types.DefaultUserServer}
-	lids := fakeLIDMapper{
-		pnForLID: map[string]types.JID{
-			"113108114763976@lid": {User: "16175551234", Server: types.DefaultUserServer},
-		},
-	}
-
-	tests := []struct {
-		name         string
-		storedSender string
-		isFromMe     bool
-		chatJID      types.JID
-		want         types.JID
-	}{
-		{
-			name:         "lid sender is parsed as-is",
-			storedSender: "74616466886757@lid",
-			chatJID:      groupJID,
-			want:         types.JID{User: "74616466886757", Server: types.HiddenUserServer},
-		},
-		{
-			name:         "s.whatsapp.net sender is parsed as-is",
-			storedSender: "16465551234@s.whatsapp.net",
-			chatJID:      groupJID,
-			want:         types.JID{User: "16465551234", Server: types.DefaultUserServer},
-		},
-		{
-			name:         "bare-digit sender in a DM resolves to the chat JID",
-			storedSender: "16465559999",
-			chatJID:      dmJID,
-			want:         dmJID,
-		},
-		{
-			name:         "bare-digit group sender known to the LID store becomes an @lid JID",
-			storedSender: "113108114763976",
-			chatJID:      groupJID,
-			want:         types.JID{User: "113108114763976", Server: types.HiddenUserServer},
-		},
-		{
-			name:         "bare-digit group sender without mapping falls back to default user server",
-			storedSender: "16465551234",
-			chatJID:      groupJID,
-			want:         types.JID{User: "16465551234", Server: types.DefaultUserServer},
-		},
-		{
-			name:         "is_from_me row resolves to the bridge's own JID",
-			storedSender: "15550001111",
-			isFromMe:     true,
-			chatJID:      groupJID,
-			want:         ownJID,
-		},
-		{
-			name:         "is_from_me row with a full-JID sender still resolves to own JID",
-			storedSender: "16465551234@s.whatsapp.net",
-			isFromMe:     true,
-			chatJID:      groupJID,
-			want:         ownJID,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := resolveReplyParticipant(context.Background(), lids, tt.storedSender, tt.isFromMe, tt.chatJID, ownJID)
-			if got != tt.want {
-				t.Errorf("resolveReplyParticipant(%q, %v, %v, %v) = %v, want %v",
-					tt.storedSender, tt.isFromMe, tt.chatJID, ownJID, got, tt.want)
-			}
-		})
-	}
-}
 
 func TestBuildReplyContextInfo(t *testing.T) {
 	participant := types.JID{User: "74616466886757", Server: types.HiddenUserServer}

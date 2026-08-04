@@ -84,6 +84,11 @@ func NewMessageStore() (*MessageStore, error) {
 			PRIMARY KEY (id, chat_jid),
 			FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 		);
+
+		CREATE TABLE IF NOT EXISTS jid_aliases (
+			old_jid TEXT PRIMARY KEY,
+			new_jid TEXT NOT NULL
+		);
 	`)
 	if err != nil {
 		db.Close()
@@ -448,12 +453,23 @@ func extractMediaInfo(msg *waProto.Message) (mediaType string, filename string, 
 
 // Handle regular incoming messages with media support
 func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *events.Message, logger waLog.Logger) {
-	// Save message to database
-	chatJID := msg.Info.Chat.String()
-	sender := msg.Info.Sender.User
+	// Canonicalize identities before storing (see identity.go). The chat's
+	// alt JID comes from the stanza: SenderAlt for incoming messages,
+	// RecipientAlt for own-outgoing DMs.
+	ctx := context.Background()
+	chatAlt := msg.Info.SenderAlt
+	if msg.Info.IsFromMe {
+		chatAlt = msg.Info.RecipientAlt
+	}
+	canonicalChat := canonicalChatJID(ctx, client.Store.LIDs, msg.Info.Chat, chatAlt)
+	chatJID := canonicalChat.String()
+	sender := canonicalSenderJID(ctx, client.Store.LIDs, msg.Info.Sender, msg.Info.SenderAlt, client.Store.GetJID(), msg.Info.IsFromMe)
 
-	// Get appropriate chat name (pass nil for conversation since we don't have one for regular messages)
-	name := GetChatName(client, messageStore, msg.Info.Chat, chatJID, nil, sender, logger)
+	// Get appropriate chat name (pass nil for conversation since we don't
+	// have one for regular messages). The display-name fallback stays in the
+	// bare-digits namespace — the full canonical JID is a storage format,
+	// not a display name.
+	name := GetChatName(client, messageStore, canonicalChat, chatJID, nil, canonicalChat.User, logger)
 
 	// Update chat in database with the message timestamp (keeps last message time updated)
 	err := messageStore.StoreChat(chatJID, name, msg.Info.Timestamp)
@@ -622,6 +638,20 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	var fileLength uint64
 	var err error
 
+	// A caller may hold a stale chat key from the other addressing namespace
+	// (phone number vs LID); retry the lookup with the mapped alternate key
+	// before concluding the message doesn't exist.
+	if jid, jidErr := types.ParseJID(chatJID); jidErr == nil {
+		var exists int
+		if scanErr := messageStore.db.QueryRow(
+			"SELECT 1 FROM messages WHERE id = ? AND chat_jid = ?", messageID, chatJID,
+		).Scan(&exists); scanErr == sql.ErrNoRows {
+			if alt, altErr := client.Store.GetAltJID(context.Background(), jid); altErr == nil && !alt.IsEmpty() {
+				chatJID = alt.String()
+			}
+		}
+	}
+
 	// First, check if we already have this file
 	chatDir := fmt.Sprintf("store/%s", strings.ReplaceAll(chatJID, ":", "_"))
 	localPath := ""
@@ -714,50 +744,6 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 
 	fmt.Printf("Successfully downloaded %s media to %s (%d bytes)\n", mediaType, absPath, len(mediaData))
 	return true, mediaType, filename, absPath, nil
-}
-
-// lidMapper is the subset of whatsmeow's LID store used to disambiguate
-// bare-digit stored senders.
-type lidMapper interface {
-	GetPNForLID(ctx context.Context, lid types.JID) (types.JID, error)
-}
-
-// resolveReplyParticipant works out the JID to put in a quoted reply's
-// ContextInfo.Participant, given a row read from messages.db. The sender
-// column is written inconsistently: handleMessage stores bare user digits
-// (msg.Info.Sender.User), while handleHistorySync stores whatever WhatsApp
-// put in Message.Key.Participant, which may be a full JID (including
-// "@lid") or, for is_from_me / DM-derived rows, bare digits. Rules, in
-// order:
-//  1. an is_from_me row was sent by this bridge — use its own JID,
-//     regardless of what the sender column holds.
-//  2. a stored value containing "@" is a full JID already — parse it as-is.
-//  3. a DM chat only has two participants, so a bare-digit sender there is
-//     the chat JID itself.
-//  4. bare digits in a group are LID digits when the LID store knows them
-//     as such — handleMessage stores only Sender.User, and LID addressing
-//     is WhatsApp's default for groups, so treating known-LID digits as a
-//     phone number would misattribute the quoted message.
-//  5. otherwise best-effort assume the default user server. WhatsApp's
-//     tap-to-jump keys primarily off StanzaID, so an imprecise Participant
-//     here is acceptable.
-func resolveReplyParticipant(ctx context.Context, lids lidMapper, storedSender string, isFromMe bool, chatJID, ownJID types.JID) types.JID {
-	if isFromMe {
-		return ownJID
-	}
-	if strings.Contains(storedSender, "@") {
-		if jid, err := types.ParseJID(storedSender); err == nil {
-			return jid
-		}
-	}
-	if chatJID.Server != types.GroupServer {
-		return chatJID
-	}
-	lid := types.NewJID(storedSender, types.HiddenUserServer)
-	if pn, err := lids.GetPNForLID(ctx, lid); err == nil && !pn.IsEmpty() {
-		return lid
-	}
-	return types.NewJID(storedSender, types.DefaultUserServer)
 }
 
 // buildReplyContextInfo builds the ContextInfo for a quoted-reply
@@ -1078,6 +1064,15 @@ func main() {
 	}
 	defer messageStore.Close()
 
+	// Canonicalize legacy JID formats in the message store (see identity.go).
+	// Runs on every startup: re-runs pick up PN<->LID mappings the store has
+	// learned since the rows were written.
+	if changed, err := canonicalizeMessageStore(context.Background(), messageStore.db, client.Store.LIDs, client.Store.GetJID()); err != nil {
+		logger.Warnf("Failed to canonicalize message store: %v", err)
+	} else if changed > 0 {
+		logger.Infof("Canonicalized %d legacy rows in the message store", changed)
+	}
+
 	// Setup event handling for messages and history sync
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
@@ -1253,6 +1248,11 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, historySync *events.HistorySync, logger waLog.Logger) {
 	fmt.Printf("Received history sync event with %d conversations\n", len(historySync.Data.Conversations))
 
+	// The payload's own PN<->LID table must be consulted before the LID
+	// store: whatsmeow ingests it asynchronously, racing this handler.
+	pnMap := historyPNMap(historySync.Data)
+	ownJID := client.Store.GetJID()
+
 	syncedCount := 0
 	for _, conversation := range historySync.Data.Conversations {
 		// Parse JID from the conversation
@@ -1260,14 +1260,16 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 			continue
 		}
 
-		chatJID := *conversation.ID
-
 		// Try to parse the JID
-		jid, err := types.ParseJID(chatJID)
+		jid, err := types.ParseJID(*conversation.ID)
 		if err != nil {
-			logger.Warnf("Failed to parse JID %s: %v", chatJID, err)
+			logger.Warnf("Failed to parse JID %s: %v", *conversation.ID, err)
 			continue
 		}
+
+		// Canonicalize the chat key (see identity.go)
+		jid = canonicalHistoryChatJID(context.Background(), client.Store.LIDs, jid, conversation.GetPnJID(), pnMap)
+		chatJID := jid.String()
 
 		// Get appropriate chat name by passing the history sync conversation directly
 		name := GetChatName(client, messageStore, jid, chatJID, conversation, "", logger)
@@ -1324,23 +1326,22 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 					continue
 				}
 
-				// Determine sender
-				var sender string
+				// Determine the canonical sender (see identity.go)
+				participant := ""
 				isFromMe := false
 				if msg.Message.Key != nil {
 					if msg.Message.Key.FromMe != nil {
 						isFromMe = *msg.Message.Key.FromMe
 					}
-					if !isFromMe && msg.Message.Key.Participant != nil && *msg.Message.Key.Participant != "" {
-						sender = *msg.Message.Key.Participant
-					} else if isFromMe {
-						sender = client.Store.ID.User
-					} else {
-						sender = jid.User
+					if msg.Message.Key.Participant != nil {
+						participant = *msg.Message.Key.Participant
 					}
-				} else {
-					sender = jid.User
 				}
+				if participant == "" {
+					participant = msg.Message.GetParticipant()
+				}
+				sender := canonicalHistorySenderJID(context.Background(), client.Store.LIDs,
+					participant, isFromMe, jid, ownJID, pnMap)
 
 				// Store message
 				msgID := ""
