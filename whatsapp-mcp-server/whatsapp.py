@@ -55,6 +55,27 @@ class MessageContext:
     before: List[Message]
     after: List[Message]
 
+def _canonical_jid(identifier: str) -> str:
+    """Normalize a bare phone number to the canonical JID form the bridge
+    stores (full user@server strings, phone-number namespace preferred)."""
+    if "@" in identifier:
+        return identifier
+    return f"{identifier}@s.whatsapp.net"
+
+def _resolve_chat_jid(cursor, jid: Optional[str]) -> Optional[str]:
+    """Follow a stale chat key (e.g. an @lid key the bridge later merged into
+    its phone-number form) to its current value via the bridge-maintained
+    jid_aliases table."""
+    if not jid:
+        return jid
+    try:
+        cursor.execute("SELECT new_jid FROM jid_aliases WHERE old_jid = ?", (jid,))
+        row = cursor.fetchone()
+        return row[0] if row else jid
+    except sqlite3.OperationalError:
+        # Table absent: DB written by a bridge from before aliases existed.
+        return jid
+
 def get_sender_name(sender_jid: str) -> str:
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
@@ -174,12 +195,14 @@ def list_messages(
             params.append(before)
 
         if sender_phone_number:
-            where_clauses.append("messages.sender = ?")
-            params.append(sender_phone_number)
+            # The sender column stores full canonical JIDs; also match the
+            # raw value for rows the bridge has not migrated yet.
+            where_clauses.append("messages.sender IN (?, ?)")
+            params.extend([sender_phone_number, _canonical_jid(sender_phone_number)])
             
         if chat_jid:
             where_clauses.append("messages.chat_jid = ?")
-            params.append(chat_jid)
+            params.append(_resolve_chat_jid(cursor, chat_jid))
             
         if query:
             where_clauses.append("LOWER(messages.content) LIKE LOWER(?)")
@@ -236,20 +259,28 @@ def list_messages(
 def get_message_context(
     message_id: str,
     before: int = 5,
-    after: int = 5
+    after: int = 5,
+    chat_jid: Optional[str] = None
 ) -> MessageContext:
-    """Get context around a specific message."""
+    """Get context around a specific message. Message IDs are only unique per
+    chat ((id, chat_jid) is the primary key), so pass chat_jid to disambiguate
+    when known."""
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
-        
+
         # Get the target message first
-        cursor.execute("""
+        query = """
             SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.chat_jid, messages.media_type
             FROM messages
             JOIN chats ON messages.chat_jid = chats.jid
             WHERE messages.id = ?
-        """, (message_id,))
+        """
+        params = [message_id]
+        if chat_jid:
+            query += " AND messages.chat_jid = ?"
+            params.append(_resolve_chat_jid(cursor, chat_jid))
+        cursor.execute(query, params)
         msg_data = cursor.fetchone()
         
         if not msg_data:
@@ -464,10 +495,11 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
                 m.is_from_me as last_is_from_me
             FROM chats c
             JOIN messages m ON c.jid = m.chat_jid
-            WHERE m.sender = ? OR c.jid = ?
+            WHERE m.sender IN (?, ?) OR c.jid IN (?, ?)
             ORDER BY c.last_message_time DESC
             LIMIT ? OFFSET ?
-        """, (jid, jid, limit, page * limit))
+        """, (jid, _resolve_chat_jid(cursor, _canonical_jid(jid)),
+              jid, _resolve_chat_jid(cursor, _canonical_jid(jid)), limit, page * limit))
         
         chats = cursor.fetchall()
         
@@ -511,10 +543,11 @@ def get_last_interaction(jid: str) -> str:
                 m.media_type
             FROM messages m
             JOIN chats c ON m.chat_jid = c.jid
-            WHERE m.sender = ? OR c.jid = ?
+            WHERE m.sender IN (?, ?) OR c.jid IN (?, ?)
             ORDER BY m.timestamp DESC
             LIMIT 1
-        """, (jid, jid))
+        """, (jid, _resolve_chat_jid(cursor, _canonical_jid(jid)),
+              jid, _resolve_chat_jid(cursor, _canonical_jid(jid))))
         
         msg_data = cursor.fetchone()
         

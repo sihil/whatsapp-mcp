@@ -143,16 +143,19 @@ def get_last_interaction(jid: str) -> str:
 def get_message_context(
     message_id: str,
     before: int = 5,
-    after: int = 5
+    after: int = 5,
+    chat_jid: Optional[str] = None
 ) -> Dict[str, Any]:
     """Get context around a specific WhatsApp message.
-    
+
     Args:
         message_id: The ID of the message to get context for
         before: Number of messages to include before the target message (default 5)
         after: Number of messages to include after the target message (default 5)
+        chat_jid: Optional JID of the chat the message belongs to. Message IDs are
+                 only unique per chat, so pass this to disambiguate when known.
     """
-    context = whatsapp_get_message_context(message_id, before, after)
+    context = whatsapp_get_message_context(message_id, before, after, chat_jid)
     return context
 
 @mcp.tool()
