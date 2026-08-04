@@ -150,6 +150,17 @@ func (store *MessageStore) GetMessages(chatJID string, limit int) ([]Message, er
 	return messages, nil
 }
 
+// GetMessageForReply looks up a stored message by id and chat JID, returning
+// the fields needed to build a quoted-reply ContextInfo. Returns
+// sql.ErrNoRows if no such message exists in that chat.
+func (store *MessageStore) GetMessageForReply(id, chatJID string) (sender string, content string, isFromMe bool, err error) {
+	err = store.db.QueryRow(
+		"SELECT sender, content, is_from_me FROM messages WHERE id = ? AND chat_jid = ?",
+		id, chatJID,
+	).Scan(&sender, &content, &isFromMe)
+	return sender, content, isFromMe, err
+}
+
 // Get all chats
 func (store *MessageStore) GetChats() (map[string]time.Time, error) {
 	rows, err := store.db.Query("SELECT jid, last_message_time FROM chats ORDER BY last_message_time DESC")
@@ -200,10 +211,11 @@ type SendMessageRequest struct {
 	Recipient string `json:"recipient"`
 	Message   string `json:"message"`
 	MediaPath string `json:"media_path,omitempty"`
+	ReplyTo   string `json:"reply_to,omitempty"`
 }
 
 // Function to send a WhatsApp message
-func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message string, mediaPath string) (bool, string) {
+func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string, replyTo string) (bool, string) {
 	if !client.IsConnected() {
 		return false, "Not connected to WhatsApp"
 	}
@@ -356,6 +368,32 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 				FileSHA256:    resp.FileSHA256,
 				FileLength:    &resp.FileLength,
 			}
+		}
+	} else if replyTo != "" {
+		// DM chats can be keyed under either addressing namespace
+		// (phone number vs LID), so retry the lookup with the mapped
+		// alternate key before concluding the target doesn't exist.
+		chatKey := recipientJID
+		sender, content, isFromMe, err := messageStore.GetMessageForReply(replyTo, chatKey.String())
+		if err == sql.ErrNoRows {
+			if alt, altErr := client.Store.GetAltJID(context.Background(), recipientJID); altErr == nil && !alt.IsEmpty() {
+				chatKey = alt
+				sender, content, isFromMe, err = messageStore.GetMessageForReply(replyTo, chatKey.String())
+			}
+		}
+		if err == sql.ErrNoRows {
+			return false, "Reply target message not found in chat"
+		}
+		if err != nil {
+			return false, fmt.Sprintf("Error looking up reply target: %v", err)
+		}
+
+		participant := resolveReplyParticipant(context.Background(), client.Store.LIDs,
+			sender, isFromMe, chatKey, client.Store.GetJID().ToNonAD())
+
+		msg.ExtendedTextMessage = &waProto.ExtendedTextMessage{
+			Text:        proto.String(message),
+			ContextInfo: buildReplyContextInfo(replyTo, participant, content),
 		}
 	} else {
 		msg.Conversation = proto.String(message)
@@ -678,6 +716,67 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	return true, mediaType, filename, absPath, nil
 }
 
+// lidMapper is the subset of whatsmeow's LID store used to disambiguate
+// bare-digit stored senders.
+type lidMapper interface {
+	GetPNForLID(ctx context.Context, lid types.JID) (types.JID, error)
+}
+
+// resolveReplyParticipant works out the JID to put in a quoted reply's
+// ContextInfo.Participant, given a row read from messages.db. The sender
+// column is written inconsistently: handleMessage stores bare user digits
+// (msg.Info.Sender.User), while handleHistorySync stores whatever WhatsApp
+// put in Message.Key.Participant, which may be a full JID (including
+// "@lid") or, for is_from_me / DM-derived rows, bare digits. Rules, in
+// order:
+//  1. an is_from_me row was sent by this bridge — use its own JID,
+//     regardless of what the sender column holds.
+//  2. a stored value containing "@" is a full JID already — parse it as-is.
+//  3. a DM chat only has two participants, so a bare-digit sender there is
+//     the chat JID itself.
+//  4. bare digits in a group are LID digits when the LID store knows them
+//     as such — handleMessage stores only Sender.User, and LID addressing
+//     is WhatsApp's default for groups, so treating known-LID digits as a
+//     phone number would misattribute the quoted message.
+//  5. otherwise best-effort assume the default user server. WhatsApp's
+//     tap-to-jump keys primarily off StanzaID, so an imprecise Participant
+//     here is acceptable.
+func resolveReplyParticipant(ctx context.Context, lids lidMapper, storedSender string, isFromMe bool, chatJID, ownJID types.JID) types.JID {
+	if isFromMe {
+		return ownJID
+	}
+	if strings.Contains(storedSender, "@") {
+		if jid, err := types.ParseJID(storedSender); err == nil {
+			return jid
+		}
+	}
+	if chatJID.Server != types.GroupServer {
+		return chatJID
+	}
+	lid := types.NewJID(storedSender, types.HiddenUserServer)
+	if pn, err := lids.GetPNForLID(ctx, lid); err == nil && !pn.IsEmpty() {
+		return lid
+	}
+	return types.NewJID(storedSender, types.DefaultUserServer)
+}
+
+// buildReplyContextInfo builds the ContextInfo for a quoted-reply
+// ExtendedTextMessage from a row read from messages.db.
+func buildReplyContextInfo(id string, participant types.JID, content string) *waProto.ContextInfo {
+	quotedText := content
+	if quotedText == "" {
+		quotedText = "[media]"
+	}
+
+	return &waProto.ContextInfo{
+		StanzaID:    proto.String(id),
+		Participant: proto.String(participant.String()),
+		QuotedMessage: &waProto.Message{
+			Conversation: proto.String(quotedText),
+		},
+	}
+}
+
 // Function to get group members from WhatsApp
 func getGroupMembers(client *whatsmeow.Client, groupJID string) (bool, string, string, []GroupMember) {
 	if !client.IsConnected() {
@@ -788,10 +887,15 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			return
 		}
 
+		if req.ReplyTo != "" && req.MediaPath != "" {
+			http.Error(w, "reply_to cannot be combined with media_path", http.StatusBadRequest)
+			return
+		}
+
 		fmt.Println("Received request to send message", req.Message, req.MediaPath)
 
 		// Send the message
-		success, message := sendWhatsAppMessage(client, req.Recipient, req.Message, req.MediaPath)
+		success, message := sendWhatsAppMessage(client, messageStore, req.Recipient, req.Message, req.MediaPath, req.ReplyTo)
 		fmt.Println("Message sent", success, message)
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
