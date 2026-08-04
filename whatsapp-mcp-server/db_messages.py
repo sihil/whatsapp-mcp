@@ -10,10 +10,10 @@ from db import (
     canonical_jid,
     connect,
     escape_like,
+    resolve_chat_jid,
     messages_from_rows,
     parse_date_param,
     placeholders,
-    resolve_chat_jid,
 )
 from models import Message, MessageContext
 
@@ -72,6 +72,45 @@ def _context_around(
     return before_messages, after_messages
 
 
+def _build_message_filters(
+    cursor: sqlite3.Cursor,
+    after: Optional[str],
+    before: Optional[str],
+    sender_phone_number: Optional[str],
+    chat_jid: Optional[str],
+    query: Optional[str],
+) -> Tuple[List[str], List[Any]]:
+    where_clauses: List[str] = []
+    params: List[Any] = []
+
+    if after:
+        where_clauses.append(f"{DATE_EXPR} > datetime(?)")
+        params.append(parse_date_param(after, "after"))
+
+    if before:
+        where_clauses.append(f"{DATE_EXPR} < datetime(?)")
+        params.append(parse_date_param(before, "before"))
+
+    if sender_phone_number:
+        # The sender column stores full canonical JIDs; also match the raw
+        # value and any alias spellings the bridge has since merged.
+        candidates = alias_candidates(cursor, canonical_jid(sender_phone_number))
+        if sender_phone_number not in candidates:
+            candidates.append(sender_phone_number)
+        where_clauses.append(f"messages.sender IN ({placeholders(candidates)})")
+        params.extend(candidates)
+
+    if chat_jid:
+        where_clauses.append("messages.chat_jid = ?")
+        params.append(resolve_chat_jid(cursor, canonical_jid(chat_jid)))
+
+    if query:
+        where_clauses.append("LOWER(messages.content) LIKE LOWER(?) ESCAPE '\\'")
+        params.append(f"%{escape_like(query)}%")
+
+    return where_clauses, params
+
+
 def list_messages(
     after: Optional[str] = None,
     before: Optional[str] = None,
@@ -92,46 +131,16 @@ def list_messages(
     conn = connect()
     try:
         cursor = conn.cursor()
+        where_clauses, params = _build_message_filters(
+            cursor, after, before, sender_phone_number, chat_jid, query
+        )
 
-        # Build base query
         query_parts = [_MESSAGE_SOURCE]
-        where_clauses = []
-        params = []
-
-        # Add filters
-        if after:
-            where_clauses.append(f"{DATE_EXPR} > datetime(?)")
-            params.append(parse_date_param(after, "after"))
-
-        if before:
-            where_clauses.append(f"{DATE_EXPR} < datetime(?)")
-            params.append(parse_date_param(before, "before"))
-
-        if sender_phone_number:
-            # The sender column stores full canonical JIDs; also match the raw
-            # value and any alias spellings the bridge has since merged.
-            candidates = alias_candidates(cursor, canonical_jid(sender_phone_number))
-            if sender_phone_number not in candidates:
-                candidates.append(sender_phone_number)
-            where_clauses.append(f"messages.sender IN ({placeholders(candidates)})")
-            params.extend(candidates)
-
-        if chat_jid:
-            where_clauses.append("messages.chat_jid = ?")
-            params.append(resolve_chat_jid(cursor, canonical_jid(chat_jid)))
-
-        if query:
-            where_clauses.append("LOWER(messages.content) LIKE LOWER(?) ESCAPE '\\'")
-            params.append(f"%{escape_like(query)}%")
-
         if where_clauses:
             query_parts.append("WHERE " + " AND ".join(where_clauses))
-
-        # Add pagination
-        offset = page * limit
         query_parts.append("ORDER BY messages.timestamp DESC")
         query_parts.append("LIMIT ? OFFSET ?")
-        params.extend([limit, offset])
+        params.extend([limit, page * limit])
 
         cursor.execute(" ".join(query_parts), tuple(params))
         rows: Sequence[Sequence[Any]] = cursor.fetchall()
@@ -174,29 +183,24 @@ def get_message_context(
     conn = connect()
     try:
         cursor = conn.cursor()
-
-        # Get the target message first
         query = f"{_MESSAGE_SOURCE} WHERE messages.id = ?"
-        params = [message_id]
+        params: List[Any] = [message_id]
         if chat_jid:
             query += " AND messages.chat_jid = ?"
             params.append(resolve_chat_jid(cursor, canonical_jid(chat_jid)))
-        cursor.execute(query, params)
-        msg_data = cursor.fetchone()
 
-        if not msg_data:
+        cursor.execute(query, tuple(params))
+        row = cursor.fetchone()
+        if not row:
             raise ValueError(f"Message with ID {message_id} not found")
 
         name_cache: Dict[str, Optional[str]] = {}
-        target_message = messages_from_rows(cursor, [msg_data], name_cache)[0]
-
+        target = messages_from_rows(cursor, [row], name_cache)[0]
         before_messages, after_messages = _context_around(
-            cursor, target_message.chat_jid, target_message.id, msg_data[5],
-            before, after, name_cache
+            cursor, target.chat_jid, target.id, row[5], before, after, name_cache
         )
-
         return MessageContext(
-            message=target_message, before=before_messages, after=after_messages
+            message=target, before=before_messages, after=after_messages
         ).to_dict()
     finally:
         conn.close()
