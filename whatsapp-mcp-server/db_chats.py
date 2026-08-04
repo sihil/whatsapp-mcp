@@ -7,11 +7,11 @@ from db import (
     canonical_jid,
     connect,
     escape_like,
+    resolve_chat_jid,
     chat_from_row,
     get_sender_name,
     message_from_row,
     placeholders,
-    resolve_chat_jid,
     resolve_sender_names,
 )
 from models import Contact, Message
@@ -46,15 +46,13 @@ def _chat_query(include_last_message: bool, where: str = "", suffix: str = "") -
 
 def format_message(message: Message, show_chat_info: bool = True, cursor=None) -> str:
     """Render a single message as a human-readable line."""
-    output = ""
-
     if show_chat_info and message.chat_name:
-        output += f"[{message.timestamp:%Y-%m-%d %H:%M:%S}] Chat: {message.chat_name} "
+        output = f"[{message.timestamp:%Y-%m-%d %H:%M:%S}] Chat: {message.chat_name} "
     else:
-        output += f"[{message.timestamp:%Y-%m-%d %H:%M:%S}] "
+        output = f"[{message.timestamp:%Y-%m-%d %H:%M:%S}] "
 
     # Always surface the message ID: it is the handle for reply_to and download_media
-    if hasattr(message, 'media_type') and message.media_type:
+    if message.media_type:
         content_prefix = f"[{message.media_type} - Message ID: {message.id} - Chat JID: {message.chat_jid}] "
     else:
         content_prefix = f"[Message ID: {message.id}] "
@@ -63,8 +61,7 @@ def format_message(message: Message, show_chat_info: bool = True, cursor=None) -
         sender_name = "Me"
     else:
         sender_name = message.sender_name or get_sender_name(message.sender, cursor)
-    output += f"From: {sender_name}: {content_prefix}{message.content}\n"
-    return output
+    return f"{output}From: {sender_name}: {content_prefix}{message.content}\n"
 
 
 def list_chats(
@@ -105,7 +102,6 @@ def search_contacts(query: str, limit: int = 50) -> List[Dict[str, Any]]:
     conn = connect()
     try:
         cursor = conn.cursor()
-
         search_pattern = '%' + escape_like(query) + '%'
         # The bridge writes '' (not NULL) for an unknown chat name, and ''
         # sorts before every real name — so ordering by name alone lets
@@ -132,17 +128,16 @@ def search_contacts(query: str, limit: int = 50) -> List[Dict[str, Any]]:
 
 
 def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Dict[str, Any]]:
-    """Get all chats involving the contact.
+    """Get all chats involving the contact, most recently active first.
 
     Args:
-        jid: The contact's JID to search for
+        jid: The contact's JID (or bare phone number) to search for
         limit: Maximum number of chats to return (default 20)
         page: Page number for pagination (default 0)
     """
     conn = connect()
     try:
         cursor = conn.cursor()
-
         candidates = alias_candidates(cursor, canonical_jid(jid))
         slots = placeholders(candidates)
         cursor.execute(
@@ -165,7 +160,6 @@ def get_last_interaction(jid: str) -> str:
     conn = connect()
     try:
         cursor = conn.cursor()
-
         candidates = alias_candidates(cursor, canonical_jid(jid))
         slots = placeholders(candidates)
         cursor.execute(f"""
@@ -183,7 +177,6 @@ def get_last_interaction(jid: str) -> str:
 
         names = resolve_sender_names(cursor, [row[3]] if not row[6] else [])
         return format_message(message_from_row(row, names), cursor=cursor)
-
     finally:
         conn.close()
 
@@ -193,7 +186,6 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]
     conn = connect()
     try:
         cursor = conn.cursor()
-
         resolved_jid = resolve_chat_jid(cursor, canonical_jid(chat_jid))
         cursor.execute(_chat_query(include_last_message, "WHERE c.jid = ?"), (resolved_jid,))
         row = cursor.fetchone()

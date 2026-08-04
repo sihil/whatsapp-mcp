@@ -1,5 +1,5 @@
-"""Read-only access to the bridge's SQLite message store: connection handling
-and JID/alias resolution shared by the query modules."""
+"""Read-only access to the bridge's SQLite message store: connection handling,
+JID/alias resolution and row -> dataclass mapping shared by the query modules."""
 import os
 import sqlite3
 from datetime import datetime
@@ -60,7 +60,7 @@ def canonical_jid(identifier: str) -> str:
     return f"{identifier}@s.whatsapp.net"
 
 
-def resolve_chat_jid(cursor, jid: Optional[str]) -> Optional[str]:
+def resolve_chat_jid(cursor: sqlite3.Cursor, jid: Optional[str]) -> Optional[str]:
     """Follow a stale chat key (e.g. an @lid key the bridge later merged into
     its phone-number form) to its current value via the bridge-maintained
     jid_aliases table."""
