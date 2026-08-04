@@ -122,12 +122,14 @@ def get_sender_name(sender_jid: str) -> str:
             else:
                 phone_part = sender_jid
 
-            cursor.execute("""
-                SELECT name
-                FROM chats
-                WHERE jid LIKE ? ESCAPE '\\'
-                LIMIT 1
-            """, (f"%{escape_like(phone_part)}%",))
+            # Anchor on the user part and exclude groups: a bare substring
+            # match would happily label a sender with a group's name, or with
+            # another contact whose number merely contains these digits.
+            cursor.execute(
+                "SELECT name FROM chats WHERE jid LIKE ? ESCAPE '\\' "
+                "AND jid NOT LIKE '%@g.us' AND name IS NOT NULL AND name != '' LIMIT 1",
+                (f"{escape_like(phone_part)}@%",),
+            )
 
             result = cursor.fetchone()
 
