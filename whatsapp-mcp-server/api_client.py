@@ -1,34 +1,63 @@
-"""REST calls to the Go bridge (sends, media downloads, live group data)."""
+"""REST calls to the Go bridge (sends, media downloads, live group data).
+
+Send-path validation lives here rather than in the tool wrappers, so the
+recipient and media-path checks apply regardless of caller. Validation
+failures raise ValueError; bridge communication failures come back as a
+(False, message) tuple for the caller to turn into a RuntimeError.
+"""
 import json
 import logging
 import os.path
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import requests
 
 import audio
-from config import api_base_url
+from config import BRIDGE_DOWN_HINT, api_base_url
 
 logger = logging.getLogger(__name__)
 
+# A /send call blocks for the bridge's entire upload to WhatsApp, so this
+# bounds a large media transfer over a slow link, not a quick round trip.
+_SEND_READ_TIMEOUT = 600
 
-def _post_send(payload: Dict[str, str]) -> Tuple[bool, str]:
-    """POST a payload to the bridge's /send endpoint and parse the result.
 
-    The bridge returns a {success, message} JSON body on both 200 and
-    error responses; only its plain-text validation errors are not JSON.
+def _post(
+    endpoint: str, payload: Dict[str, Any], timeout: Tuple[int, int]
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    """POST a payload to a bridge endpoint and decode its JSON body.
+
+    Returns `(body, "")` whenever the bridge answered with JSON — it sends a
+    {success, message} body on error responses too, so a non-200 still
+    carries a usable message. Returns `(None, error)` when the request never
+    completed or the response was not JSON (its plain-text validation errors).
     """
     try:
-        response = requests.post(f"{api_base_url()}/send", json=payload)
-        try:
-            result = response.json()
-        except json.JSONDecodeError:
-            return False, f"Error: HTTP {response.status_code} - {response.text}"
-        return result.get("success", False), result.get("message", "Unknown response")
+        response = requests.post(f"{api_base_url()}{endpoint}", json=payload, timeout=timeout)
+    except (requests.Timeout, requests.ConnectionError) as e:
+        return None, f"Could not reach the WhatsApp bridge ({BRIDGE_DOWN_HINT}): {e}"
     except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
+        return None, f"Request error: {str(e)}"
     except Exception as e:
-        return False, f"Unexpected error: {str(e)}"
+        return None, f"Unexpected error: {str(e)}"
+
+    try:
+        return response.json(), ""
+    except json.JSONDecodeError:
+        return None, f"Error: HTTP {response.status_code} - {response.text}"
+
+
+def _post_send(payload: Dict[str, str]) -> Tuple[bool, str]:
+    """POST to the bridge's /send endpoint and parse the result.
+
+    The read timeout is generous because it covers the bridge's whole upload
+    to WhatsApp: timing out early would report a send as failed while it is
+    still in flight, and the caller's retry would deliver it twice.
+    """
+    body, error = _post("/send", payload, timeout=(5, _SEND_READ_TIMEOUT))
+    if body is None:
+        return False, error
+    return body.get("success", False), body.get("message", "Unknown response")
 
 
 def send_message(recipient: str, message: str, reply_to: Optional[str] = None) -> Tuple[bool, str]:
@@ -98,41 +127,22 @@ def download_media(message_id: str, chat_jid: str) -> Tuple[Optional[str], str]:
         failure; message always carries the bridge's (or transport-layer)
         status text.
     """
-    try:
-        url = f"{api_base_url()}/download"
-        payload = {
-            "message_id": message_id,
-            "chat_jid": chat_jid
-        }
-
-        response = requests.post(url, json=payload)
-
-        if response.status_code == 200:
-            result = response.json()
-            if result.get("success", False):
-                path = result.get("path")
-                message = result.get("message", "Media downloaded successfully")
-                logger.info(f"Media downloaded successfully: {path}")
-                return path, message
-            message = result.get("message", "Unknown error")
-            logger.warning(f"Download failed: {message}")
-            return None, message
-        error = f"Error: HTTP {response.status_code} - {response.text}"
+    body, error = _post(
+        "/download", {"message_id": message_id, "chat_jid": chat_jid}, timeout=(5, 120)
+    )
+    if body is None:
         logger.error(error)
         return None, error
 
-    except requests.RequestException as e:
-        error = f"Request error: {str(e)}"
-        logger.error(error)
-        return None, error
-    except json.JSONDecodeError:
-        error = f"Error parsing response: {response.text}"
-        logger.error(error)
-        return None, error
-    except Exception as e:
-        error = f"Unexpected error: {str(e)}"
-        logger.error(error)
-        return None, error
+    if not body.get("success", False):
+        message = body.get("message", "Unknown error")
+        logger.warning(f"Download failed: {message}")
+        return None, message
+
+    path = body.get("path")
+    message = body.get("message", "Media downloaded successfully")
+    logger.info(f"Media downloaded successfully: {path}")
+    return path, message
 
 
 def get_group_members(group_jid: str) -> dict:
@@ -144,43 +154,7 @@ def get_group_members(group_jid: str) -> dict:
     Returns:
         A dictionary containing success status, group name, member count, and list of members
     """
-    try:
-        url = f"{api_base_url()}/group/members"
-        payload = {
-            "group_jid": group_jid
-        }
-
-        response = requests.post(url, json=payload)
-
-        if response.status_code == 200:
-            result = response.json()
-            return result
-        else:
-            return {
-                "success": False,
-                "message": f"Error: HTTP {response.status_code} - {response.text}",
-                "members": [],
-                "member_count": 0
-            }
-
-    except requests.RequestException as e:
-        return {
-            "success": False,
-            "message": f"Request error: {str(e)}",
-            "members": [],
-            "member_count": 0
-        }
-    except json.JSONDecodeError:
-        return {
-            "success": False,
-            "message": f"Error parsing response: {response.text}",
-            "members": [],
-            "member_count": 0
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "message": f"Unexpected error: {str(e)}",
-            "members": [],
-            "member_count": 0
-        }
+    body, error = _post("/group/members", {"group_jid": group_jid}, timeout=(5, 30))
+    if body is None:
+        return {"success": False, "message": error, "members": [], "member_count": 0}
+    return body

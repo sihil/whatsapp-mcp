@@ -12,6 +12,8 @@ _DEFAULT_DB_PATH = os.path.join(
 )
 _DEFAULT_API_BASE_URL = "http://localhost:8080/api"
 
+BRIDGE_DOWN_HINT = "is the WhatsApp bridge running? (cd whatsapp-bridge && go run .)"
+
 
 def configure_logging() -> None:
     raw = os.environ.get("WHATSAPP_MCP_LOG_LEVEL")
