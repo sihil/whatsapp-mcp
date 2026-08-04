@@ -108,9 +108,11 @@ def format_message(message: Message, show_chat_info: bool = True) -> None:
     else:
         output += f"[{message.timestamp:%Y-%m-%d %H:%M:%S}] "
         
-    content_prefix = ""
+    # Always surface the message ID: it is the handle for reply_to and download_media
     if hasattr(message, 'media_type') and message.media_type:
         content_prefix = f"[{message.media_type} - Message ID: {message.id} - Chat JID: {message.chat_jid}] "
+    else:
+        content_prefix = f"[Message ID: {message.id}] "
     
     try:
         sender_name = get_sender_name(message.sender) if not message.is_from_me else "Me"
