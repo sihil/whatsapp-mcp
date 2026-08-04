@@ -25,6 +25,7 @@ _MESSAGE_SOURCE = f"""
 def _context_around(
     cursor: sqlite3.Cursor,
     chat_jid: str,
+    message_id: str,
     timestamp: str,
     before: int,
     after: int,
@@ -32,15 +33,24 @@ def _context_around(
 ) -> Tuple[List[Message], List[Message]]:
     """Messages immediately before and after `timestamp` in one chat, both
     lists in chronological order. `name_cache` is shared across the calls made
-    for one listing so sender names resolve once, not once per match."""
+    for one listing so sender names resolve once, not once per match.
+
+    Ordering is by (timestamp, id) rather than timestamp alone: WhatsApp
+    timestamps are second-granularity, so a rapid-fire exchange routinely puts
+    several messages in the same second. A strict comparison on timestamp
+    alone would drop every one of those neighbours from the window, while an
+    inclusive one would place each of them in *both* windows; the id tiebreak
+    gives a total order, so each neighbour lands on exactly one side.
+    """
     before_messages: List[Message] = []
     if before > 0:
         cursor.execute(f"""
             {_MESSAGE_SOURCE}
-            WHERE messages.chat_jid = ? AND messages.timestamp < ?
-            ORDER BY messages.timestamp DESC
+            WHERE messages.chat_jid = ?
+              AND (messages.timestamp, messages.id) < (?, ?)
+            ORDER BY messages.timestamp DESC, messages.id DESC
             LIMIT ?
-        """, (chat_jid, timestamp, before))
+        """, (chat_jid, timestamp, message_id, before))
         before_messages = messages_from_rows(cursor, cursor.fetchall(), name_cache)
         before_messages.reverse()
 
@@ -48,10 +58,11 @@ def _context_around(
     if after > 0:
         cursor.execute(f"""
             {_MESSAGE_SOURCE}
-            WHERE messages.chat_jid = ? AND messages.timestamp > ?
-            ORDER BY messages.timestamp ASC
+            WHERE messages.chat_jid = ?
+              AND (messages.timestamp, messages.id) > (?, ?)
+            ORDER BY messages.timestamp ASC, messages.id ASC
             LIMIT ?
-        """, (chat_jid, timestamp, after))
+        """, (chat_jid, timestamp, message_id, after))
         after_messages = messages_from_rows(cursor, cursor.fetchall(), name_cache)
 
     return before_messages, after_messages
@@ -121,7 +132,7 @@ def list_messages(
             messages_with_context = []
             for row, message in zip(rows, result):
                 context_before_msgs, context_after_msgs = _context_around(
-                    cursor, message.chat_jid, row[5],
+                    cursor, message.chat_jid, message.id, row[5],
                     context_before, context_after, name_cache
                 )
                 messages_with_context.extend(context_before_msgs)
@@ -166,7 +177,8 @@ def get_message_context(
         target_message = messages_from_rows(cursor, [msg_data], name_cache)[0]
 
         before_messages, after_messages = _context_around(
-            cursor, target_message.chat_jid, msg_data[5], before, after, name_cache
+            cursor, target_message.chat_jid, target_message.id, msg_data[5],
+            before, after, name_cache
         )
 
         return MessageContext(
