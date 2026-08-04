@@ -30,9 +30,9 @@ def _context_around(
     after: int,
     name_cache: Optional[Dict[str, Optional[str]]] = None,
 ) -> Tuple[List[Message], List[Message]]:
-    """Messages immediately before and after `timestamp` in one chat.
-    `name_cache` is shared across the calls made for one listing so sender
-    names resolve once, not once per match."""
+    """Messages immediately before and after `timestamp` in one chat, both
+    lists in chronological order. `name_cache` is shared across the calls made
+    for one listing so sender names resolve once, not once per match."""
     before_messages: List[Message] = []
     if before > 0:
         cursor.execute(f"""
@@ -42,6 +42,7 @@ def _context_around(
             LIMIT ?
         """, (chat_jid, timestamp, before))
         before_messages = messages_from_rows(cursor, cursor.fetchall(), name_cache)
+        before_messages.reverse()
 
     after_messages: List[Message] = []
     if after > 0:
