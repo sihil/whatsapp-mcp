@@ -121,7 +121,10 @@ def search_contacts(query: str) -> List[Contact]:
         cursor = conn.cursor()
 
         search_pattern = '%' + escape_like(query) + '%'
-
+        # The bridge writes '' (not NULL) for an unknown chat name, and ''
+        # sorts before every real name — so ordering by name alone lets
+        # nameless JID matches fill the whole limit and drop the named
+        # contacts the caller was actually looking for. Named ones first.
         cursor.execute("""
             SELECT DISTINCT
                 jid,
@@ -130,7 +133,7 @@ def search_contacts(query: str) -> List[Contact]:
             WHERE
                 (LOWER(name) LIKE LOWER(?) ESCAPE '\\' OR LOWER(jid) LIKE LOWER(?) ESCAPE '\\')
                 AND jid NOT LIKE '%@g.us'
-            ORDER BY name, jid
+            ORDER BY (name IS NULL OR name = ''), name, jid
             LIMIT 50
         """, (search_pattern, search_pattern))
 
