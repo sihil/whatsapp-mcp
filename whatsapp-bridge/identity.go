@@ -267,13 +267,7 @@ func canonicalizeMessageStore(ctx context.Context, db *sql.DB, lids lidMapper, o
 		}
 	}
 
-	// 2. Normalize the legacy phone-number server spelling.
-	if err := count(tx.ExecContext(ctx,
-		`UPDATE messages SET sender = REPLACE(sender, '@c.us', '@s.whatsapp.net') WHERE sender LIKE '%@c.us'`)); err != nil {
-		return 0, err
-	}
-
-	// 3. Own rows always carry the own PN JID.
+	// 2. Own rows always carry the own PN JID.
 	if !ownJID.IsEmpty() {
 		own := ownJID.ToNonAD().String()
 		if err := count(tx.ExecContext(ctx,
@@ -282,7 +276,7 @@ func canonicalizeMessageStore(ctx context.Context, db *sql.DB, lids lidMapper, o
 		}
 	}
 
-	// 4. A bare-digit sender in a DM is the chat peer (verified to hold for
+	// 3. A bare-digit sender in a DM is the chat peer (verified to hold for
 	// every such row): store the chat key itself.
 	if err := count(tx.ExecContext(ctx, `
 		UPDATE messages SET sender = chat_jid
@@ -291,7 +285,7 @@ func canonicalizeMessageStore(ctx context.Context, db *sql.DB, lids lidMapper, o
 		return 0, err
 	}
 
-	// 5. Bare digits in a multi-party chat (group, broadcast, newsletter)
+	// 4. Bare digits in a multi-party chat (group, broadcast, newsletter)
 	// are LID digits when the LID store knows them as such; otherwise assume
 	// the PN namespace (same best-effort guess the read path used to make,
 	// frozen into data).
@@ -313,7 +307,8 @@ func canonicalizeMessageStore(ctx context.Context, db *sql.DB, lids lidMapper, o
 		}
 	}
 
-	// 6. Full-JID senders: strip device parts and PN-ify @lid where mapped.
+	// 5. Full-JID senders: strip device parts, normalize the legacy @c.us
+	// server spelling, and PN-ify @lid where mapped.
 	fullSenders, err := collectColumn(tx, `SELECT DISTINCT sender FROM messages WHERE sender LIKE '%@%'`)
 	if err != nil {
 		return 0, err
