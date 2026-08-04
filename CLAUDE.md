@@ -10,7 +10,7 @@ WhatsApp MCP server: lets an MCP client (Claude Desktop, Cursor) search/read per
 
 Two cooperating processes; both must be running for the system to work:
 
-1. **`whatsapp-bridge/`** — Go application (`main.go`: bridge, REST API, message store; `identity.go`: JID canonicalization; Go tests alongside) using [whatsmeow](https://github.com/tulir/whatsmeow). Connects to WhatsApp, authenticates via QR code (or a pairing code via `-pair-phone`, see Commands/Gotchas), stores message history in SQLite, and exposes a REST API on `localhost:8080`:
+1. **`whatsapp-bridge/`** — Go application (`main.go`: bridge, REST API, message store; `identity.go`: JID canonicalization; Go tests alongside) using [whatsmeow](https://github.com/tulir/whatsmeow). Connects to WhatsApp, authenticates via QR code (or a pairing code via `-pair-phone`, see Commands/Gotchas), stores message history in SQLite, and exposes a REST API on `localhost:8080`. The client sets `SynchronousAck` (messages are only acked after the SQLite write) and `UseRetryMessageStore` (outbound messages survive decryption-retry requests across restarts):
    - `POST /api/send` — send a text message or media file; optional `reply_to` (a message ID) sends it as a quoted reply
    - `POST /api/download` — download media from a message to disk
    - `POST /api/group/members` — list group members (with contact-name lookup)

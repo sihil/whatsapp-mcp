@@ -1127,6 +1127,11 @@ func main() {
 		return
 	}
 
+	// Only ack messages after our event handlers have persisted them, and keep
+	// sent messages in the whatsmeow DB so decryption-retry requests survive restarts.
+	client.SynchronousAck = true
+	client.UseRetryMessageStore = true
+
 	// Initialize message store
 	messageStore, err := NewMessageStore()
 	if err != nil {
