@@ -6,7 +6,7 @@ from typing import Dict, Optional, Tuple
 import requests
 
 import audio
-from config import WHATSAPP_API_BASE_URL
+from config import api_base_url
 
 
 def _post_send(payload: Dict[str, str]) -> Tuple[bool, str]:
@@ -16,7 +16,7 @@ def _post_send(payload: Dict[str, str]) -> Tuple[bool, str]:
     error responses; only its plain-text validation errors are not JSON.
     """
     try:
-        response = requests.post(f"{WHATSAPP_API_BASE_URL}/send", json=payload)
+        response = requests.post(f"{api_base_url()}/send", json=payload)
         try:
             result = response.json()
         except json.JSONDecodeError:
@@ -96,7 +96,7 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
         The local file path if download was successful, None otherwise
     """
     try:
-        url = f"{WHATSAPP_API_BASE_URL}/download"
+        url = f"{api_base_url()}/download"
         payload = {
             "message_id": message_id,
             "chat_jid": chat_jid
@@ -138,7 +138,7 @@ def get_group_members(group_jid: str) -> dict:
         A dictionary containing success status, group name, member count, and list of members
     """
     try:
-        url = f"{WHATSAPP_API_BASE_URL}/group/members"
+        url = f"{api_base_url()}/group/members"
         payload = {
             "group_jid": group_jid
         }

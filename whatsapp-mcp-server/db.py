@@ -5,7 +5,7 @@ import sqlite3
 from typing import Optional
 from urllib.parse import quote
 
-from config import MESSAGES_DB_PATH
+from config import messages_db_path
 
 
 def connect() -> sqlite3.Connection:
@@ -18,7 +18,7 @@ def connect() -> sqlite3.Connection:
     open would fail every read with SQLITE_READONLY_ROLLBACK. So fall back to
     a read-write open for exactly that case, and stay read-only otherwise.
     """
-    path = MESSAGES_DB_PATH
+    path = messages_db_path()
     if not os.path.isfile(path):
         raise RuntimeError(
             f"messages.db not found at {path} — start the bridge first: "

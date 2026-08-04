@@ -10,7 +10,7 @@ from api_client import (
     send_file,
     send_message,
 )
-from config import MESSAGES_DB_PATH, WHATSAPP_API_BASE_URL
+from config import api_base_url, messages_db_path
 from db import get_sender_name
 from db_chats import (
     format_message,
@@ -28,10 +28,9 @@ from models import Chat, Contact, Message, MessageContext
 __all__ = [
     "Chat",
     "Contact",
-    "MESSAGES_DB_PATH",
     "Message",
     "MessageContext",
-    "WHATSAPP_API_BASE_URL",
+    "api_base_url",
     "download_media",
     "format_message",
     "format_messages_list",
@@ -44,6 +43,7 @@ __all__ = [
     "get_sender_name",
     "list_chats",
     "list_messages",
+    "messages_db_path",
     "search_contacts",
     "send_audio_message",
     "send_file",
