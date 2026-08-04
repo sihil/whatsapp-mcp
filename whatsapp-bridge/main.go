@@ -93,6 +93,13 @@ func NewMessageStore() (*MessageStore, error) {
 			old_jid TEXT PRIMARY KEY,
 			new_jid TEXT NOT NULL
 		);
+
+		CREATE TABLE IF NOT EXISTS contacts (
+			jid           TEXT PRIMARY KEY,
+			full_name     TEXT NOT NULL DEFAULT '',
+			push_name     TEXT NOT NULL DEFAULT '',
+			business_name TEXT NOT NULL DEFAULT ''
+		);
 	`)
 	if err != nil {
 		db.Close()
@@ -107,11 +114,20 @@ func (store *MessageStore) Close() error {
 	return store.db.Close()
 }
 
-// Store a chat in the database
+// Store a chat in the database.
+//
+// Upsert rather than INSERT OR REPLACE: an empty name must not erase the name
+// already on the row (GetChatName now returns "" instead of inventing a phone
+// number, so this is the common case for unknown contacts). It also avoids
+// REPLACE's delete-then-insert, which fires foreign key actions against the
+// messages rows that reference this chat.
 func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time) error {
 	_, err := store.db.Exec(
-		"INSERT OR REPLACE INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)",
-		jid, name, lastMessageTime,
+		`INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)
+		 ON CONFLICT(jid) DO UPDATE SET
+			name = CASE WHEN excluded.name != '' THEN excluded.name ELSE chats.name END,
+			last_message_time = excluded.last_message_time`,
+		jid, keepName(name), lastMessageTime,
 	)
 	return err
 }
@@ -464,15 +480,23 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	sender := canonicalSenderJID(ctx, client.Store.LIDs, msg.Info.Sender, msg.Info.SenderAlt, client.Store.GetJID(), msg.Info.IsFromMe)
 
 	// Get appropriate chat name (pass nil for conversation since we don't
-	// have one for regular messages). The display-name fallback stays in the
-	// bare-digits namespace — the full canonical JID is a storage format,
-	// not a display name.
-	name := GetChatName(client, messageStore, canonicalChat, chatJID, nil, canonicalChat.User, logger)
+	// have one for regular messages). May be empty when the contact store
+	// knows nothing; StoreChat keeps any name already on the row.
+	name := GetChatName(client, messageStore, canonicalChat, chatJID, nil, logger)
 
 	// Update chat in database with the message timestamp (keeps last message time updated)
 	err := messageStore.StoreChat(chatJID, name, msg.Info.Timestamp)
 	if err != nil {
 		logger.Warnf("Failed to store chat: %v", err)
+	}
+
+	// Every incoming stanza carries the sender's self-chosen display name. For
+	// a group participant who is not in the address book it is the only name
+	// available, so record it against the canonical sender JID.
+	if !msg.Info.IsFromMe && msg.Info.PushName != "" {
+		if err := messageStore.StorePushName(sender, msg.Info.PushName); err != nil {
+			logger.Warnf("Failed to store push name for %s: %v", sender, err)
+		}
 	}
 
 	// Extract text content
@@ -812,7 +836,9 @@ func buildReplyContextInfo(id string, participant types.JID, content, mediaType 
 }
 
 // Function to get group members from WhatsApp
-func getGroupMembers(client *whatsmeow.Client, groupJID string) (bool, string, string, []GroupMember) {
+// The roster is also written through to the contacts table: this is the one
+// place the bridge learns names for participants who have never sent a message.
+func getGroupMembers(client *whatsmeow.Client, messageStore *MessageStore, groupJID string) (bool, string, string, []GroupMember) {
 	if !client.IsConnected() {
 		return false, "Not connected to WhatsApp", "", nil
 	}
@@ -864,6 +890,11 @@ func getGroupMembers(client *whatsmeow.Client, groupJID string) (bool, string, s
 				member.DisplayName = contact.PushName
 			} else if contact.BusinessName != "" {
 				member.DisplayName = contact.BusinessName
+			}
+			// lookupJID is already PN-canonical, matching messages.sender.
+			if err := messageStore.StoreContactNames(lookupJID.String(),
+				contact.FullName, contact.PushName, contact.BusinessName); err != nil {
+				fmt.Printf("Warning: failed to store contact names for %s: %v\n", lookupJID, err)
 			}
 		}
 
@@ -1020,7 +1051,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		}
 
 		// Get group members
-		success, message, groupName, members := getGroupMembers(client, req.GroupJID)
+		success, message, groupName, members := getGroupMembers(client, messageStore, req.GroupJID)
 
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
@@ -1149,6 +1180,17 @@ func main() {
 		logger.Infof("Canonicalized %d legacy rows in the message store", changed)
 	}
 
+	// Seed contact names so group senders can be attributed by the read layer,
+	// and clear phone-number chat names left by the old GetChatName fallback
+	// (see contacts.go). Idempotent; runs on every startup.
+	if synced, scrubbed, err := migrateContacts(
+		context.Background(), messageStore.db, client.Store.Contacts, client.Store.LIDs,
+	); err != nil {
+		logger.Warnf("Failed to sync contact names: %v", err)
+	} else {
+		logger.Infof("Synced %d contact names, cleared %d phone-number chat names", synced, scrubbed)
+	}
+
 	// Setup event handling for messages and history sync
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
@@ -1253,11 +1295,13 @@ func main() {
 }
 
 // GetChatName determines the appropriate name for a chat based on JID and other info
-func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types.JID, chatJID string, conversation interface{}, sender string, logger waLog.Logger) string {
+func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types.JID, chatJID string, conversation interface{}, logger waLog.Logger) string {
 	// First, check if chat already exists in database with a name
 	var existingName string
 	err := messageStore.db.QueryRow("SELECT name FROM chats WHERE jid = ?", chatJID).Scan(&existingName)
-	if err == nil && existingName != "" {
+	// A stored name that is nothing but digits came from this function's old
+	// phone-number fallback. Treat it as absent so the lookup runs again.
+	if err == nil && !isNumericName(existingName) {
 		// Chat exists with a name, use that
 		logger.Infof("Using existing chat name for %s: %s", chatJID, existingName)
 		return existingName
@@ -1317,19 +1361,26 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 		// This is an individual contact
 		logger.Infof("Getting name for contact: %s", chatJID)
 
-		// Just use contact info (full name)
+		// Use whatever the contact store knows, best name first. There is
+		// deliberately no phone-number fallback: a bare number is not a name,
+		// and storing one as if it were defeats the read layer's own fallback
+		// chain. An empty name leaves the row's existing value untouched.
 		contact, err := client.Store.Contacts.GetContact(context.Background(), jid)
-		if err == nil && contact.FullName != "" {
-			name = contact.FullName
-		} else if sender != "" {
-			// Fallback to sender
-			name = sender
-		} else {
-			// Last fallback to JID
-			name = jid.User
+		if err == nil {
+			for _, candidate := range []string{contact.FullName, contact.PushName, contact.BusinessName} {
+				if name = keepName(candidate); name != "" {
+					break
+				}
+			}
+			// Same names the read layer will want for this sender in groups.
+			if storeErr := messageStore.StoreContactNames(
+				chatJID, contact.FullName, contact.PushName, contact.BusinessName,
+			); storeErr != nil {
+				logger.Warnf("Failed to store contact names for %s: %v", chatJID, storeErr)
+			}
 		}
 
-		logger.Infof("Using contact name: %s", name)
+		logger.Infof("Using contact name: %q", name)
 	}
 
 	return name
@@ -1363,7 +1414,7 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 		chatJID := jid.String()
 
 		// Get appropriate chat name by passing the history sync conversation directly
-		name := GetChatName(client, messageStore, jid, chatJID, conversation, "", logger)
+		name := GetChatName(client, messageStore, jid, chatJID, conversation, logger)
 
 		// Process messages
 		messages := conversation.Messages
