@@ -54,7 +54,7 @@ Python deps are managed with `uv` (`pyproject.toml` + `uv.lock`, Python ≥3.11)
 
 ## Gotchas
 
-- First bridge run prints a QR code to scan with the WhatsApp mobile app; re-auth is needed roughly every 20 days. If messages get out of sync, delete both files in `whatsapp-bridge/store/` and restart the bridge.
+- First bridge run prints a QR code to scan with the WhatsApp mobile app; re-auth is needed roughly every 20 days. If messages get out of sync, delete both files in `whatsapp-bridge/store/` and restart the bridge. The bridge appears as "WhatsApp MCP Bridge" in the phone's Linked Devices list — this needs both `DeviceProps.Os` and `DeviceProps.PlatformType` set (the phone shows "Other device" when PlatformType is UNKNOWN), and only takes effect at pairing time.
 - A `Client outdated (405) connect failure` on startup means the pinned whatsmeow is too old — it embeds a WhatsApp Web client version that WhatsApp's servers reject after a few months. Fix: `go get go.mau.fi/whatsmeow@latest && go mod tidy` in `whatsapp-bridge/`. This recurs periodically.
 - `go-sqlite3` requires CGO; on Windows CGO is disabled by default (`go env -w CGO_ENABLED=1` plus a C compiler).
 - FFmpeg is optional and only needed by `send_audio_message` to convert non-Opus audio; without it, raw audio can still be sent via `send_file`.

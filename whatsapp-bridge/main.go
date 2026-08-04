@@ -24,6 +24,8 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/proto/waCompanionReg"
+	wmstore "go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -1059,6 +1061,12 @@ func main() {
 	// Set up logger
 	logger := waLog.Stdout("Client", "INFO", true)
 	logger.Infof("Starting WhatsApp client...")
+
+	// Linked Devices label (takes effect at pairing time, so existing sessions
+	// keep their old label until re-paired). The phone ignores Os and shows
+	// "Other device" unless PlatformType is set to a known value.
+	wmstore.DeviceProps.Os = proto.String("WhatsApp MCP Bridge")
+	wmstore.DeviceProps.PlatformType = waCompanionReg.DeviceProps_DESKTOP.Enum()
 
 	// Create database connection for storing session data
 	dbLog := waLog.Stdout("Database", "INFO", true)
