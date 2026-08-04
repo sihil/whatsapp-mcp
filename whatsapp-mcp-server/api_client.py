@@ -33,7 +33,7 @@ def _post_send(payload: Dict[str, str]) -> Tuple[bool, str]:
 
 def send_message(recipient: str, message: str, reply_to: Optional[str] = None) -> Tuple[bool, str]:
     if not recipient:
-        return False, "Recipient must be provided"
+        raise ValueError("Recipient must be provided")
 
     payload = {
         "recipient": recipient,
@@ -46,13 +46,11 @@ def send_message(recipient: str, message: str, reply_to: Optional[str] = None) -
 
 def send_file(recipient: str, media_path: str, reply_to: Optional[str] = None) -> Tuple[bool, str]:
     if not recipient:
-        return False, "Recipient must be provided"
-
+        raise ValueError("Recipient must be provided")
     if not media_path:
-        return False, "Media path must be provided"
-
+        raise ValueError("Media path must be provided")
     if not os.path.isfile(media_path):
-        return False, f"Media file not found: {media_path}"
+        raise ValueError(f"Media file not found: {media_path}")
 
     payload = {
         "recipient": recipient,
@@ -65,19 +63,19 @@ def send_file(recipient: str, media_path: str, reply_to: Optional[str] = None) -
 
 def send_audio_message(recipient: str, media_path: str, reply_to: Optional[str] = None) -> Tuple[bool, str]:
     if not recipient:
-        return False, "Recipient must be provided"
-
+        raise ValueError("Recipient must be provided")
     if not media_path:
-        return False, "Media path must be provided"
-
+        raise ValueError("Media path must be provided")
     if not os.path.isfile(media_path):
-        return False, f"Media file not found: {media_path}"
+        raise ValueError(f"Media file not found: {media_path}")
 
     if not media_path.endswith(".ogg"):
         try:
             media_path = audio.convert_to_opus_ogg_temp(media_path)
         except Exception as e:
-            return False, f"Error converting file to opus ogg. You likely need to install ffmpeg: {str(e)}"
+            raise RuntimeError(
+                f"Error converting file to opus ogg. You likely need to install ffmpeg: {e}"
+            ) from e
 
     payload = {
         "recipient": recipient,
@@ -88,7 +86,7 @@ def send_audio_message(recipient: str, media_path: str, reply_to: Optional[str] 
     return _post_send(payload)
 
 
-def download_media(message_id: str, chat_jid: str) -> Optional[str]:
+def download_media(message_id: str, chat_jid: str) -> Tuple[Optional[str], str]:
     """Download media from a message and return the local file path.
 
     Args:
@@ -96,7 +94,9 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
         chat_jid: The JID of the chat containing the message
 
     Returns:
-        The local file path if download was successful, None otherwise
+        (path, message): path is the local file path on success, None on
+        failure; message always carries the bridge's (or transport-layer)
+        status text.
     """
     try:
         url = f"{api_base_url()}/download"
@@ -111,24 +111,28 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
             result = response.json()
             if result.get("success", False):
                 path = result.get("path")
+                message = result.get("message", "Media downloaded successfully")
                 logger.info(f"Media downloaded successfully: {path}")
-                return path
-            else:
-                logger.warning(f"Download failed: {result.get('message', 'Unknown error')}")
-                return None
-        else:
-            logger.error(f"Error: HTTP {response.status_code} - {response.text}")
-            return None
+                return path, message
+            message = result.get("message", "Unknown error")
+            logger.warning(f"Download failed: {message}")
+            return None, message
+        error = f"Error: HTTP {response.status_code} - {response.text}"
+        logger.error(error)
+        return None, error
 
     except requests.RequestException as e:
-        logger.error(f"Request error: {str(e)}")
-        return None
+        error = f"Request error: {str(e)}"
+        logger.error(error)
+        return None, error
     except json.JSONDecodeError:
-        logger.error(f"Error parsing response: {response.text}")
-        return None
+        error = f"Error parsing response: {response.text}"
+        logger.error(error)
+        return None, error
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        return None
+        error = f"Unexpected error: {str(e)}"
+        logger.error(error)
+        return None, error
 
 
 def get_group_members(group_jid: str) -> dict:

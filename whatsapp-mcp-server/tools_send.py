@@ -19,6 +19,7 @@ def send_message(
     reply_to: Optional[str] = None
 ) -> Dict[str, Any]:
     """Send a WhatsApp message to a person or group. For group chats use the JID.
+    Raises on failure (invalid recipient, unreachable bridge, or a rejected send).
 
     Args:
         recipient: The recipient - either a phone number with country code but no + or other symbols,
@@ -30,24 +31,16 @@ def send_message(
     Returns:
         A dictionary containing success status and a status message
     """
-    # Validate input
-    if not recipient:
-        return {
-            "success": False,
-            "message": "Recipient must be provided"
-        }
-
-    # Call the whatsapp_send_message function with the unified recipient parameter
     success, status_message = whatsapp_send_message(recipient, message, reply_to)
-    return {
-        "success": success,
-        "message": status_message
-    }
+    if not success:
+        raise RuntimeError(status_message)
+    return {"success": True, "message": status_message}
 
 
 @mcp.tool()
 def send_file(recipient: str, media_path: str, reply_to: Optional[str] = None) -> Dict[str, Any]:
     """Send a file such as a picture, raw audio, video or document via WhatsApp to the specified recipient. For group messages use the JID.
+    Raises on failure (invalid recipient/path, unreachable bridge, or a rejected send).
 
     Args:
         recipient: The recipient - either a phone number with country code but no + or other symbols,
@@ -59,18 +52,16 @@ def send_file(recipient: str, media_path: str, reply_to: Optional[str] = None) -
     Returns:
         A dictionary containing success status and a status message
     """
-
-    # Call the whatsapp_send_file function
     success, status_message = whatsapp_send_file(recipient, media_path, reply_to)
-    return {
-        "success": success,
-        "message": status_message
-    }
+    if not success:
+        raise RuntimeError(status_message)
+    return {"success": True, "message": status_message}
 
 
 @mcp.tool()
 def send_audio_message(recipient: str, media_path: str, reply_to: Optional[str] = None) -> Dict[str, Any]:
     """Send any audio file as a WhatsApp audio message to the specified recipient. For group messages use the JID. If it errors due to ffmpeg not being installed, use send_file instead.
+    Raises on failure (invalid recipient/path, conversion failure, unreachable bridge, or a rejected send).
 
     Args:
         recipient: The recipient - either a phone number with country code but no + or other symbols,
@@ -83,41 +74,38 @@ def send_audio_message(recipient: str, media_path: str, reply_to: Optional[str] 
         A dictionary containing success status and a status message
     """
     success, status_message = whatsapp_send_audio_message(recipient, media_path, reply_to)
-    return {
-        "success": success,
-        "message": status_message
-    }
+    if not success:
+        raise RuntimeError(status_message)
+    return {"success": True, "message": status_message}
 
 
 @mcp.tool()
 def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
     """Download media from a WhatsApp message and get the local file path.
+    Raises on failure (message/media not found, unreachable bridge, or a
+    rejected download), with the bridge's actual error text.
 
     Args:
         message_id: The ID of the message containing the media
         chat_jid: The JID of the chat containing the message
 
     Returns:
-        A dictionary containing success status, a status message, and the file path if successful
+        A dictionary containing success status, a status message, and the file path
     """
-    file_path = whatsapp_download_media(message_id, chat_jid)
-
-    if file_path:
-        return {
-            "success": True,
-            "message": "Media downloaded successfully",
-            "file_path": file_path
-        }
-    else:
-        return {
-            "success": False,
-            "message": "Failed to download media"
-        }
+    file_path, status_message = whatsapp_download_media(message_id, chat_jid)
+    if not file_path:
+        raise RuntimeError(status_message)
+    return {
+        "success": True,
+        "message": status_message,
+        "file_path": file_path,
+    }
 
 
 @mcp.tool()
 def list_group_members(group_jid: str) -> Dict[str, Any]:
-    """Get members of a WhatsApp group.
+    """Get members of a WhatsApp group. Raises on failure (group not found,
+    unreachable bridge).
 
     Args:
         group_jid: The JID of the group (must end with @g.us)
@@ -126,4 +114,9 @@ def list_group_members(group_jid: str) -> Dict[str, Any]:
         A dictionary containing group name, member count, and list of members
         with their JID, phone number, display name, and admin status
     """
-    return whatsapp_get_group_members(group_jid)
+    result = whatsapp_get_group_members(group_jid)
+    if not result.get("success", False):
+        # Passing the soft failure through would report an unreachable bridge
+        # as a group with zero members.
+        raise RuntimeError(result.get("message", "Unknown error"))
+    return result
