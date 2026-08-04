@@ -1,32 +1,50 @@
-"""Chat and contact queries against the bridge's message store."""
+"""Chat queries against the bridge's message store. Contact-oriented lookups
+live in db_contacts.py, which builds on the query helpers here."""
+import sqlite3
 from typing import Any, Dict, List, Optional
 
 from db import (
-    MESSAGE_COLUMNS,
-    alias_candidates,
     canonical_jid,
-    connect,
-    escape_like,
-    resolve_chat_jid,
     chat_from_row,
+    connect,
+    contact_name_expr,
+    contacts_available,
+    escape_like,
     get_sender_name,
-    message_from_row,
-    placeholders,
-    resolve_sender_names,
+    named,
+    resolve_chat_jid,
 )
-from models import Contact, Message
+from models import Message
 
-_CHAT_WITH_LAST_MESSAGE = """
-    SELECT c.jid, c.name, c.last_message_time, m.content, m.sender, m.is_from_me
-    FROM chats c
-    LEFT JOIN messages m ON c.jid = m.chat_jid AND c.last_message_time = m.timestamp
-"""
-_CHAT_ONLY = "SELECT c.jid, c.name, c.last_message_time, NULL, NULL, NULL FROM chats c"
+_LAST_MESSAGE_JOIN = (
+    "LEFT JOIN messages m ON c.jid = m.chat_jid AND c.last_message_time = m.timestamp"
+)
+_CONTACT_JOIN = "LEFT JOIN contacts ct ON ct.jid = c.jid"
 
 
-def _chat_query(include_last_message: bool, where: str = "", suffix: str = "") -> str:
+def chat_name_expr(cursor: sqlite3.Cursor) -> str:
+    """SQL for a chat's display name: the name stored on the chat, else the
+    contact behind it. Callers filtering or ordering by name must use this
+    rather than `c.name`, or they miss every chat the bridge could not name."""
+    name = named("c.name")
+    if contacts_available(cursor):
+        return f"COALESCE({name}, {contact_name_expr('ct.')})"
+    return name
+
+
+def _chat_query(
+    cursor: sqlite3.Cursor,
+    include_last_message: bool,
+    where: str = "",
+    suffix: str = "",
+) -> str:
     """Build a chat query, optionally joined to the message at
     `last_message_time`.
+
+    A direct chat's own JID is the contact's JID, so falling back to the
+    contacts table names conversations the bridge could not name at the time it
+    first saw them — including every chat whose stored name was a bare phone
+    number until the bridge cleared it.
 
     Always groups by chat. The join matches on timestamp equality, and
     WhatsApp timestamps are second-granularity, so a chat whose last second
@@ -35,7 +53,19 @@ def _chat_query(include_last_message: bool, where: str = "", suffix: str = "") -
     another chat off the page entirely (and off every later page too, since
     OFFSET then counts the duplicates).
     """
-    parts = [_CHAT_WITH_LAST_MESSAGE if include_last_message else _CHAT_ONLY]
+    with_contacts = contacts_available(cursor)
+    last_message = (
+        "m.content, m.sender, m.is_from_me" if include_last_message else "NULL, NULL, NULL"
+    )
+
+    parts = [
+        f"SELECT c.jid, {chat_name_expr(cursor)}, c.last_message_time, "
+        f"{last_message} FROM chats c"
+    ]
+    if with_contacts:
+        parts.append(_CONTACT_JOIN)
+    if include_last_message:
+        parts.append(_LAST_MESSAGE_JOIN)
     if where:
         parts.append(where)
     parts.append("GROUP BY c.jid")
@@ -78,105 +108,25 @@ def list_chats(
         where = ""
         params: List[Any] = []
 
+        name_expr = chat_name_expr(cursor)
         if query:
             escaped_query = escape_like(query)
-            where = "WHERE (LOWER(c.name) LIKE LOWER(?) ESCAPE '\\' OR c.jid LIKE ? ESCAPE '\\')"
+            where = (
+                f"WHERE (LOWER({name_expr}) LIKE LOWER(?) ESCAPE '\\' "
+                "OR c.jid LIKE ? ESCAPE '\\')"
+            )
             params.extend([f"%{escaped_query}%", f"%{escaped_query}%"])
 
-        order_by = "c.last_message_time DESC" if sort_by == "last_active" else "c.name"
+        order_by = "c.last_message_time DESC" if sort_by == "last_active" else name_expr
         params.extend([limit, page * limit])
 
         cursor.execute(
             _chat_query(
-                include_last_message, where, f"ORDER BY {order_by} LIMIT ? OFFSET ?"
+                cursor, include_last_message, where, f"ORDER BY {order_by} LIMIT ? OFFSET ?"
             ),
             tuple(params),
         )
         return [chat_from_row(row).to_dict() for row in cursor.fetchall()]
-    finally:
-        conn.close()
-
-
-def search_contacts(query: str, limit: int = 50) -> List[Dict[str, Any]]:
-    """Search contacts by name or phone number."""
-    conn = connect()
-    try:
-        cursor = conn.cursor()
-        search_pattern = '%' + escape_like(query) + '%'
-        # The bridge writes '' (not NULL) for an unknown chat name, and ''
-        # sorts before every real name — so ordering by name alone lets
-        # nameless JID matches fill the whole limit and drop the named
-        # contacts the caller was actually looking for. Named ones first.
-        cursor.execute("""
-            SELECT DISTINCT
-                jid,
-                name
-            FROM chats
-            WHERE
-                (LOWER(name) LIKE LOWER(?) ESCAPE '\\' OR LOWER(jid) LIKE LOWER(?) ESCAPE '\\')
-                AND jid NOT LIKE '%@g.us'
-            ORDER BY (name IS NULL OR name = ''), name, jid
-            LIMIT ?
-        """, (search_pattern, search_pattern, limit))
-
-        return [
-            Contact(phone_number=row[0].split('@')[0], name=row[1], jid=row[0]).to_dict()
-            for row in cursor.fetchall()
-        ]
-    finally:
-        conn.close()
-
-
-def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Dict[str, Any]]:
-    """Get all chats involving the contact, most recently active first.
-
-    Args:
-        jid: The contact's JID (or bare phone number) to search for
-        limit: Maximum number of chats to return (default 20)
-        page: Page number for pagination (default 0)
-    """
-    conn = connect()
-    try:
-        cursor = conn.cursor()
-        candidates = alias_candidates(cursor, canonical_jid(jid))
-        slots = placeholders(candidates)
-        cursor.execute(
-            _chat_query(
-                True,
-                f"WHERE c.jid IN ({slots}) "
-                f"OR c.jid IN (SELECT chat_jid FROM messages WHERE sender IN ({slots}))",
-                "ORDER BY c.last_message_time DESC LIMIT ? OFFSET ?",
-            ),
-            tuple(candidates) * 2 + (limit, page * limit),
-        )
-
-        return [chat_from_row(row).to_dict() for row in cursor.fetchall()]
-    finally:
-        conn.close()
-
-
-def get_last_interaction(jid: str) -> str:
-    """Get most recent message involving the contact, as a formatted line."""
-    conn = connect()
-    try:
-        cursor = conn.cursor()
-        candidates = alias_candidates(cursor, canonical_jid(jid))
-        slots = placeholders(candidates)
-        cursor.execute(f"""
-            SELECT {MESSAGE_COLUMNS}
-            FROM messages
-            JOIN chats ON messages.chat_jid = chats.jid
-            WHERE messages.sender IN ({slots}) OR chats.jid IN ({slots})
-            ORDER BY messages.timestamp DESC
-            LIMIT 1
-        """, tuple(candidates) * 2)
-
-        row = cursor.fetchone()
-        if not row:
-            raise ValueError(f"No messages found involving {jid}")
-
-        names = resolve_sender_names(cursor, [row[3]] if not row[6] else [])
-        return format_message(message_from_row(row, names), cursor=cursor)
     finally:
         conn.close()
 
@@ -187,73 +137,12 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]
     try:
         cursor = conn.cursor()
         resolved_jid = resolve_chat_jid(cursor, canonical_jid(chat_jid))
-        cursor.execute(_chat_query(include_last_message, "WHERE c.jid = ?"), (resolved_jid,))
+        cursor.execute(
+            _chat_query(cursor, include_last_message, "WHERE c.jid = ?"), (resolved_jid,)
+        )
         row = cursor.fetchone()
         if not row:
             raise ValueError(f"No chat found with JID {chat_jid}")
-        return chat_from_row(row).to_dict()
-    finally:
-        conn.close()
-
-
-def _phone_digits(value: str) -> str:
-    """Digits of the user part of a phone number or JID ("+1 (646) 555-9999"
-    and "16465559999@s.whatsapp.net" both yield "16465559999")."""
-    return "".join(char for char in value.split("@")[0] if char.isdigit())
-
-
-def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
-    """Get direct (non-group) chat metadata by contact phone number, matching
-    the JID's user part exactly before falling back to a suffix match."""
-    digits = _phone_digits(sender_phone_number or "")
-    if not digits:
-        raise ValueError(f"No digits in phone number: {sender_phone_number!r}")
-
-    conn = connect()
-    try:
-        cursor = conn.cursor()
-        canonical = f"{digits}@s.whatsapp.net"
-        candidates = alias_candidates(cursor, canonical)
-        cursor.execute(
-            _chat_query(
-                True,
-                f"WHERE c.jid IN ({placeholders(candidates)}) AND c.jid NOT LIKE '%@g.us'",
-            ),
-            tuple(candidates),
-        )
-        rows = cursor.fetchall()
-
-        if not rows:
-            cursor.execute(
-                _chat_query(
-                    True,
-                    "WHERE c.jid NOT LIKE '%@g.us' "
-                    "AND substr(c.jid, 1, instr(c.jid, '@') - 1) LIKE ? ESCAPE '\\'",
-                ),
-                (f"%{escape_like(digits)}",),
-            )
-            rows = cursor.fetchall()
-            matched_jids = sorted({row[0] for row in rows})
-            if len(matched_jids) > 1:
-                raise ValueError(
-                    f"Multiple direct chats end with {digits}: {', '.join(matched_jids)}. "
-                    "Pass the full JID to get_chat instead."
-                )
-            if matched_jids:
-                # A suffix match can land on a stale key (an @lid chat the
-                # bridge has since merged); follow it to the surviving row.
-                merged_jid = resolve_chat_jid(cursor, matched_jids[0])
-                if merged_jid != matched_jids[0]:
-                    cursor.execute(_chat_query(True, "WHERE c.jid = ?"), (merged_jid,))
-                    merged_rows = cursor.fetchall()
-                    if merged_rows:
-                        rows = merged_rows
-
-        if not rows:
-            raise ValueError(f"No direct chat found for {sender_phone_number}")
-
-        resolved = resolve_chat_jid(cursor, canonical)
-        row = next((candidate for candidate in rows if candidate[0] == resolved), rows[0])
         return chat_from_row(row).to_dict()
     finally:
         conn.close()

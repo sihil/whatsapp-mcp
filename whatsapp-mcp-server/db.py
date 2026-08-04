@@ -20,6 +20,37 @@ MESSAGE_COLUMNS = (
 DATE_EXPR = "datetime(messages.timestamp)"
 
 
+def named(column: str) -> str:
+    """SQL yielding `column` only when it holds an actual name.
+
+    A value of nothing but digits is the phone number some lookup fell back to,
+    not a name, and it is worse than NULL: it looks like a successful lookup and
+    stops the caller's fallback chain. The bridge no longer writes them and
+    clears the old ones at startup, but a store whose bridge has not been
+    restarted still has them, so the read path rejects them too.
+    """
+    return f"CASE WHEN {column} GLOB '*[^0-9]*' THEN {column} END"
+
+
+def contact_name_expr(prefix: str = "") -> str:
+    """SQL for a contact's display name, best source first. The bridge fills
+    these from the address book, from the push name riding on every incoming
+    message, and from group participant lookups. `prefix` qualifies the columns
+    when the contacts table is joined under an alias."""
+    return (
+        f"COALESCE({named(prefix + 'full_name')}, "
+        f"{named(prefix + 'push_name')}, {named(prefix + 'business_name')})"
+    )
+
+
+def contacts_available(cursor: sqlite3.Cursor) -> bool:
+    """Whether the bridge that wrote this store maintains a contacts table.
+    Stores written before it existed keep working, without sender names, until
+    the bridge is restarted."""
+    cursor.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'contacts'")
+    return cursor.fetchone() is not None
+
+
 def connect() -> sqlite3.Connection:
     """Open the messages DB, read-only where possible.
 
@@ -144,12 +175,28 @@ def resolve_sender_names(
     if not pending:
         return names
 
-    cursor.execute(
-        f"SELECT jid, name FROM chats WHERE jid IN ({placeholders(pending)})", tuple(pending)
-    )
-    for jid, name in cursor.fetchall():
-        if name:
-            names[jid] = name
+    # contacts covers everyone the bridge has ever seen, including group
+    # participants who have no chat of their own; chats covers names the user
+    # set on a conversation. Contacts first: it is the more specific source.
+    if contacts_available(cursor):
+        cursor.execute(
+            f"SELECT jid, {contact_name_expr()} FROM contacts "
+            f"WHERE jid IN ({placeholders(pending)})",
+            tuple(pending),
+        )
+        for jid, name in cursor.fetchall():
+            if name:
+                names[jid] = name
+
+    unresolved = [sender for sender in pending if sender not in names]
+    if unresolved:
+        cursor.execute(
+            f"SELECT jid, {named('name')} FROM chats WHERE jid IN ({placeholders(unresolved)})",
+            tuple(unresolved),
+        )
+        for jid, name in cursor.fetchall():
+            if name:
+                names[jid] = name
 
     for sender in pending:
         if sender not in names:
@@ -158,7 +205,7 @@ def resolve_sender_names(
             # match would happily label a sender with a group's name, or with
             # another contact whose number merely contains these digits.
             cursor.execute(
-                "SELECT name FROM chats WHERE jid LIKE ? ESCAPE '\\' "
+                f"SELECT {named('name')} FROM chats WHERE jid LIKE ? ESCAPE '\\' "
                 "AND jid NOT LIKE '%@g.us' AND name IS NOT NULL AND name != '' LIMIT 1",
                 (f"{escape_like(phone_part)}@%",),
             )

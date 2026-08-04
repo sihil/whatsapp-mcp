@@ -12,13 +12,11 @@ from api_client import (
 )
 from config import api_base_url, messages_db_path
 from db import get_sender_name
-from db_chats import (
-    format_message,
-    get_chat,
+from db_chats import format_message, get_chat, list_chats
+from db_contacts import (
     get_contact_chats,
     get_direct_chat_by_contact,
     get_last_interaction,
-    list_chats,
     search_contacts,
 )
 from db_messages import get_message_context, list_messages
