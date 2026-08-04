@@ -238,7 +238,7 @@ def list_messages(
             # Add context for each message
             messages_with_context = []
             for msg in result:
-                context = get_message_context(msg.id, context_before, context_after)
+                context = get_message_context(msg.id, context_before, context_after, msg.chat_jid)
                 messages_with_context.extend(context.before)
                 messages_with_context.append(context.message)
                 messages_with_context.extend(context.after)
