@@ -44,17 +44,7 @@ func canonicalSenderJID(ctx context.Context, lids lidMapper, sender, senderAlt, 
 	if isFromMe && !ownJID.IsEmpty() {
 		return ownJID.ToNonAD().String()
 	}
-	s := sender.ToNonAD()
-	if s.Server != types.HiddenUserServer {
-		return s.String()
-	}
-	if !senderAlt.IsEmpty() && senderAlt.Server == types.DefaultUserServer {
-		return senderAlt.ToNonAD().String()
-	}
-	if pn, err := lids.GetPNForLID(ctx, s); err == nil && !pn.IsEmpty() {
-		return pn.ToNonAD().String()
-	}
-	return s.String()
+	return canonicalChatJID(ctx, lids, sender.ToNonAD(), senderAlt).String()
 }
 
 // canonicalChatJID returns the canonical chat key for a live message. alt is
