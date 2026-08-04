@@ -11,7 +11,7 @@ WhatsApp MCP server: lets an MCP client (Claude Desktop, Cursor) search/read per
 Two cooperating processes; both must be running for the system to work:
 
 1. **`whatsapp-bridge/`** — Go application (single file, `main.go`) using [whatsmeow](https://github.com/tulir/whatsmeow). Connects to WhatsApp, authenticates via QR code, stores message history in SQLite, and exposes a REST API on `localhost:8080`:
-   - `POST /api/send` — send a text message or media file
+   - `POST /api/send` — send a text message or media file; optional `reply_to` (a message ID) sends it as a quoted reply
    - `POST /api/download` — download media from a message to disk
    - `POST /api/group/members` — list group members (with contact-name lookup)
 
@@ -28,10 +28,11 @@ Two cooperating processes; both must be running for the system to work:
 
 ### Storage
 
-- `whatsapp-bridge/store/messages.db` — chats + messages tables (created by `NewMessageStore` in `main.go`; schema changes go there)
+- `whatsapp-bridge/store/messages.db` — chats + messages + jid_aliases tables (created by `NewMessageStore` in `main.go`; schema changes go there)
 - `whatsapp-bridge/store/whatsapp.db` — whatsmeow session/device state
 - Both are gitignored. Deleting both forces re-authentication and a fresh history sync.
 - Media is stored as metadata only (url, media_key, hashes); actual files are fetched on demand via the `download_media` tool.
+- **JID canonicalization** (`whatsapp-bridge/identity.go`): `messages.sender` and `chat_jid` always hold full `user@server` JIDs, phone-number namespace preferred, `@lid` only when the PN↔LID mapping is unknown, own PN JID for `is_from_me` rows. An idempotent migration runs at every bridge startup to canonicalize legacy rows and merge `@lid`-keyed DM chats into their PN keys; renamed chat keys leave a row in `jid_aliases` that the Python read layer follows for stale keys. Don't write raw `msg.Info` JIDs to the DB — go through the `canonical*` helpers.
 
 ## Commands
 
