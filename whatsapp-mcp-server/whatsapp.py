@@ -599,8 +599,9 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]
             """
             
         query += " WHERE c.jid = ?"
-        
-        cursor.execute(query, (chat_jid,))
+
+        resolved_jid = _resolve_chat_jid(cursor, _canonical_jid(chat_jid))
+        cursor.execute(query, (resolved_jid,))
         chat_data = cursor.fetchone()
         
         if not chat_data:
