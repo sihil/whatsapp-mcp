@@ -1,10 +1,24 @@
 """Message queries against the bridge's message store."""
-from datetime import datetime
 from typing import Optional
 
-from db import DATE_EXPR, canonical_jid, connect, escape_like, parse_date_param, resolve_chat_jid
+from db import (
+    DATE_EXPR,
+    MESSAGE_COLUMNS,
+    canonical_jid,
+    connect,
+    escape_like,
+    message_from_row,
+    parse_date_param,
+    resolve_chat_jid,
+)
 from db_chats import format_messages_list
-from models import Message, MessageContext
+from models import MessageContext
+
+_MESSAGE_SOURCE = f"""
+    SELECT {MESSAGE_COLUMNS}
+    FROM messages
+    JOIN chats ON messages.chat_jid = chats.jid
+"""
 
 
 def list_messages(
@@ -25,8 +39,7 @@ def list_messages(
         cursor = conn.cursor()
 
         # Build base query
-        query_parts = ["SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type FROM messages"]
-        query_parts.append("JOIN chats ON messages.chat_jid = chats.jid")
+        query_parts = [_MESSAGE_SOURCE]
         where_clauses = []
         params = []
 
@@ -63,21 +76,7 @@ def list_messages(
         params.extend([limit, offset])
 
         cursor.execute(" ".join(query_parts), tuple(params))
-        messages = cursor.fetchall()
-
-        result = []
-        for msg in messages:
-            message = Message(
-                timestamp=datetime.fromisoformat(msg[0]),
-                sender=msg[1],
-                chat_name=msg[2],
-                content=msg[3],
-                is_from_me=msg[4],
-                chat_jid=msg[5],
-                id=msg[6],
-                media_type=msg[7]
-            )
-            result.append(message)
+        result = [message_from_row(row) for row in cursor.fetchall()]
 
         if include_context and result:
             # Add context for each message
@@ -111,12 +110,7 @@ def get_message_context(
         cursor = conn.cursor()
 
         # Get the target message first
-        query = """
-            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.chat_jid, messages.media_type
-            FROM messages
-            JOIN chats ON messages.chat_jid = chats.jid
-            WHERE messages.id = ?
-        """
+        query = f"{_MESSAGE_SOURCE} WHERE messages.id = ?"
         params = [message_id]
         if chat_jid:
             query += " AND messages.chat_jid = ?"
@@ -127,62 +121,27 @@ def get_message_context(
         if not msg_data:
             raise ValueError(f"Message with ID {message_id} not found")
 
-        target_message = Message(
-            timestamp=datetime.fromisoformat(msg_data[0]),
-            sender=msg_data[1],
-            chat_name=msg_data[2],
-            content=msg_data[3],
-            is_from_me=msg_data[4],
-            chat_jid=msg_data[5],
-            id=msg_data[6],
-            media_type=msg_data[8]
-        )
+        target_message = message_from_row(msg_data)
 
         # Get messages before
-        cursor.execute("""
-            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type
-            FROM messages
-            JOIN chats ON messages.chat_jid = chats.jid
+        cursor.execute(f"""
+            {_MESSAGE_SOURCE}
             WHERE messages.chat_jid = ? AND messages.timestamp < ?
             ORDER BY messages.timestamp DESC
             LIMIT ?
-        """, (msg_data[7], msg_data[0], before))
+        """, (target_message.chat_jid, msg_data[5], before))
 
-        before_messages = []
-        for msg in cursor.fetchall():
-            before_messages.append(Message(
-                timestamp=datetime.fromisoformat(msg[0]),
-                sender=msg[1],
-                chat_name=msg[2],
-                content=msg[3],
-                is_from_me=msg[4],
-                chat_jid=msg[5],
-                id=msg[6],
-                media_type=msg[7]
-            ))
+        before_messages = [message_from_row(row) for row in cursor.fetchall()]
 
         # Get messages after
-        cursor.execute("""
-            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type
-            FROM messages
-            JOIN chats ON messages.chat_jid = chats.jid
+        cursor.execute(f"""
+            {_MESSAGE_SOURCE}
             WHERE messages.chat_jid = ? AND messages.timestamp > ?
             ORDER BY messages.timestamp ASC
             LIMIT ?
-        """, (msg_data[7], msg_data[0], after))
+        """, (target_message.chat_jid, msg_data[5], after))
 
-        after_messages = []
-        for msg in cursor.fetchall():
-            after_messages.append(Message(
-                timestamp=datetime.fromisoformat(msg[0]),
-                sender=msg[1],
-                chat_name=msg[2],
-                content=msg[3],
-                is_from_me=msg[4],
-                chat_jid=msg[5],
-                id=msg[6],
-                media_type=msg[7]
-            ))
+        after_messages = [message_from_row(row) for row in cursor.fetchall()]
 
         return MessageContext(
             message=target_message,

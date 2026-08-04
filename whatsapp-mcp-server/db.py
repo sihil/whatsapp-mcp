@@ -3,10 +3,16 @@ and JID/alias resolution shared by the query modules."""
 import os
 import sqlite3
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional, Sequence
 from urllib.parse import quote
 
 from config import messages_db_path
+from models import Chat, Message
+
+MESSAGE_COLUMNS = (
+    "messages.id, messages.chat_jid, chats.name, messages.sender, "
+    "messages.content, messages.timestamp, messages.is_from_me, messages.media_type"
+)
 
 # Stored timestamps carry the offset Go wrote them with, so they can only be
 # compared against a caller-supplied instant once both sides are resolved to
@@ -132,3 +138,29 @@ def get_sender_name(sender_jid: str) -> str:
 
     finally:
         conn.close()
+
+
+def message_from_row(row: Sequence[Any]) -> Message:
+    """Build a Message from a row selected with MESSAGE_COLUMNS."""
+    return Message(
+        id=row[0],
+        chat_jid=row[1],
+        chat_name=row[2],
+        sender=row[3],
+        content=row[4],
+        timestamp=datetime.fromisoformat(row[5]),
+        is_from_me=bool(row[6]),
+        media_type=row[7],
+    )
+
+
+def chat_from_row(row: Sequence[Any]) -> Chat:
+    """Build a Chat from a row selected with CHAT_COLUMNS (see db_chats)."""
+    return Chat(
+        jid=row[0],
+        name=row[1],
+        last_message_time=datetime.fromisoformat(row[2]) if row[2] else None,
+        last_message=row[3],
+        last_sender=row[4],
+        last_is_from_me=None if row[5] is None else bool(row[5]),
+    )

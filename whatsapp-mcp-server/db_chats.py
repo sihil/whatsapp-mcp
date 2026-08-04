@@ -1,8 +1,16 @@
 """Chat and contact queries against the bridge's message store."""
-from datetime import datetime
 from typing import Any, List, Optional
 
-from db import canonical_jid, connect, escape_like, get_sender_name, resolve_chat_jid
+from db import (
+    MESSAGE_COLUMNS,
+    canonical_jid,
+    connect,
+    escape_like,
+    chat_from_row,
+    get_sender_name,
+    message_from_row,
+    resolve_chat_jid,
+)
 from models import Chat, Contact, Message
 
 _CHAT_WITH_LAST_MESSAGE = """
@@ -94,19 +102,7 @@ def list_chats(
         )
         chats = cursor.fetchall()
 
-        result = []
-        for chat_data in chats:
-            chat = Chat(
-                jid=chat_data[0],
-                name=chat_data[1],
-                last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
-                last_message=chat_data[3],
-                last_sender=chat_data[4],
-                last_is_from_me=chat_data[5]
-            )
-            result.append(chat)
-
-        return result
+        return [chat_from_row(row) for row in chats]
 
     finally:
         conn.close()
@@ -174,19 +170,7 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
 
         chats = cursor.fetchall()
 
-        result = []
-        for chat_data in chats:
-            chat = Chat(
-                jid=chat_data[0],
-                name=chat_data[1],
-                last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
-                last_message=chat_data[3],
-                last_sender=chat_data[4],
-                last_is_from_me=chat_data[5]
-            )
-            result.append(chat)
-
-        return result
+        return [chat_from_row(row) for row in chats]
 
     finally:
         conn.close()
@@ -199,40 +183,21 @@ def get_last_interaction(jid: str) -> Optional[str]:
         cursor = conn.cursor()
 
         resolved_jid = resolve_chat_jid(cursor, canonical_jid(jid))
-        cursor.execute("""
-            SELECT
-                m.timestamp,
-                m.sender,
-                c.name,
-                m.content,
-                m.is_from_me,
-                c.jid,
-                m.id,
-                m.media_type
-            FROM messages m
-            JOIN chats c ON m.chat_jid = c.jid
-            WHERE m.sender IN (?, ?) OR c.jid IN (?, ?)
-            ORDER BY m.timestamp DESC
+        cursor.execute(f"""
+            SELECT {MESSAGE_COLUMNS}
+            FROM messages
+            JOIN chats ON messages.chat_jid = chats.jid
+            WHERE messages.sender IN (?, ?) OR chats.jid IN (?, ?)
+            ORDER BY messages.timestamp DESC
             LIMIT 1
         """, (jid, resolved_jid, jid, resolved_jid))
 
-        msg_data = cursor.fetchone()
+        row = cursor.fetchone()
 
-        if not msg_data:
+        if not row:
             return None
 
-        message = Message(
-            timestamp=datetime.fromisoformat(msg_data[0]),
-            sender=msg_data[1],
-            chat_name=msg_data[2],
-            content=msg_data[3],
-            is_from_me=msg_data[4],
-            chat_jid=msg_data[5],
-            id=msg_data[6],
-            media_type=msg_data[7]
-        )
-
-        return format_message(message)
+        return format_message(message_from_row(row))
 
     finally:
         conn.close()
@@ -251,14 +216,7 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]
         if not chat_data:
             return None
 
-        return Chat(
-            jid=chat_data[0],
-            name=chat_data[1],
-            last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
-            last_message=chat_data[3],
-            last_sender=chat_data[4],
-            last_is_from_me=chat_data[5]
-        )
+        return chat_from_row(chat_data)
 
     finally:
         conn.close()
@@ -284,14 +242,7 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
         if not chat_data:
             return None
 
-        return Chat(
-            jid=chat_data[0],
-            name=chat_data[1],
-            last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
-            last_message=chat_data[3],
-            last_sender=chat_data[4],
-            last_is_from_me=chat_data[5]
-        )
+        return chat_from_row(chat_data)
 
     finally:
         conn.close()
