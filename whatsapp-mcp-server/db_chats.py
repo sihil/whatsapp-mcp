@@ -114,7 +114,7 @@ def list_chats(
         conn.close()
 
 
-def search_contacts(query: str) -> List[Contact]:
+def search_contacts(query: str, limit: int = 50) -> List[Contact]:
     """Search contacts by name or phone number."""
     conn = connect()
     try:
@@ -134,8 +134,8 @@ def search_contacts(query: str) -> List[Contact]:
                 (LOWER(name) LIKE LOWER(?) ESCAPE '\\' OR LOWER(jid) LIKE LOWER(?) ESCAPE '\\')
                 AND jid NOT LIKE '%@g.us'
             ORDER BY (name IS NULL OR name = ''), name, jid
-            LIMIT 50
-        """, (search_pattern, search_pattern))
+            LIMIT ?
+        """, (search_pattern, search_pattern, limit))
 
         contacts = cursor.fetchall()
 

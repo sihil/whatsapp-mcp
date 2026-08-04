@@ -16,13 +16,14 @@ from whatsapp import (
 
 
 @mcp.tool()
-def search_contacts(query: str) -> List[Dict[str, Any]]:
+def search_contacts(query: str, limit: int = 50) -> List[Dict[str, Any]]:
     """Search WhatsApp contacts by name or phone number.
 
     Args:
         query: Search term to match against contact names or phone numbers
+        limit: Maximum number of contacts to return (default 50)
     """
-    contacts = whatsapp_search_contacts(query)
+    contacts = whatsapp_search_contacts(query, limit)
     return contacts
 
 
