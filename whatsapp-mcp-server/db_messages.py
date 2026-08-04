@@ -1,4 +1,5 @@
 """Message queries against the bridge's message store."""
+import logging
 import sqlite3
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -15,6 +16,8 @@ from db import (
     resolve_chat_jid,
 )
 from models import Message, MessageContext
+
+logger = logging.getLogger(__name__)
 
 _MESSAGE_SOURCE = f"""
     SELECT {MESSAGE_COLUMNS}
@@ -140,10 +143,15 @@ def list_messages(
 
         results: List[Dict[str, Any]] = []
         for row, message in zip(rows, messages):
-            context_before_msgs, context_after_msgs = _context_around(
-                cursor, message.chat_jid, message.id, row[5],
-                context_before, context_after, name_cache
-            )
+            try:
+                context_before_msgs, context_after_msgs = _context_around(
+                    cursor, message.chat_jid, message.id, row[5],
+                    context_before, context_after, name_cache
+                )
+            except sqlite3.Error as e:
+                # One failed context lookup must not lose the whole listing.
+                logger.warning(f"Could not load context for message {message.id}: {e}")
+                context_before_msgs, context_after_msgs = [], []
             results.append({
                 "message": message.to_dict(),
                 "context_before": [msg.to_dict() for msg in context_before_msgs],
