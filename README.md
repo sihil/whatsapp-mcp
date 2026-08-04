@@ -169,6 +169,10 @@ You can send various media types to your WhatsApp contacts:
 
 By default, just the metadata of the media is stored in the local database. The message will indicate that media was sent. To access this media you need to use the download_media tool which takes the `message_id` and `chat_jid` (which are shown when printing messages containing the meda), this downloads the media and then returns the file path which can be then opened or passed to another tool.
 
+### Configuration
+
+The Python MCP server (`whatsapp-mcp-server/`) can be tuned via environment variables; see `whatsapp-mcp-server/README.md` for the full list (DB path override, bridge API URL, media-path allowlist, send rate limit, log level).
+
 ## Technical Details
 
 1. Claude sends requests to the Python MCP server

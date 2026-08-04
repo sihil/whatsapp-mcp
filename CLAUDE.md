@@ -15,16 +15,22 @@ Two cooperating processes; both must be running for the system to work:
    - `POST /api/download` — download media from a message to disk
    - `POST /api/group/members` — list group members (with contact-name lookup)
 
-2. **`whatsapp-mcp-server/`** — Python MCP server (FastMCP, stdio transport):
-   - `main.py` — thin `@mcp.tool()` wrappers, one per tool
-   - `whatsapp.py` — all implementation: dataclasses, SQLite queries, REST calls to the bridge
+2. **`whatsapp-mcp-server/`** — Python MCP server (FastMCP, stdio transport), split into small modules (each ≤300 lines, see `whatsapp-mcp-server/README.md` for the full breakdown):
+   - `main.py` / `server.py` — entrypoint and the shared `FastMCP` instance
+   - `config.py` — env var reads (DB path, bridge URL, media allowlist, rate limit, log level) and logging setup
+   - `tools_read.py` / `tools_send.py` — the `@mcp.tool()` wrappers, one per tool
+   - `models.py`, `db.py`/`db_chats.py`/`db_messages.py` — dataclasses and the SQLite read layer
+   - `api_client.py` — REST calls to the bridge, send rate limiting, media-path validation
+   - `whatsapp.py` — thin façade re-exporting the public functions for backward-compatible imports
    - `audio.py` — FFmpeg conversion of audio to `.ogg` Opus for voice messages
 
 **Data flow is split by operation type:**
-- **Reads** (list/search messages, chats, contacts): Python queries the bridge's SQLite DB **directly** at `whatsapp-bridge/store/messages.db` (path computed relative to `whatsapp.py`). The Go bridge is not involved.
-- **Writes/live actions** (send message/file/audio, download media, group members): Python calls the bridge's REST API at `http://localhost:8080/api`, which talks to WhatsApp.
+- **Reads** (list/search messages, chats, contacts): Python queries the bridge's SQLite DB **directly** at `whatsapp-bridge/store/messages.db` (path computed relative to `config.py`; override with `WHATSAPP_MCP_DB_PATH`). The Go bridge is not involved.
+- **Writes/live actions** (send message/file/audio, download media, group members): Python calls the bridge's REST API at `http://localhost:8080/api` (override with `WHATSAPP_API_BASE_URL`), which talks to WhatsApp.
 
-**Adding a tool that needs live WhatsApp data touches three places** (see recent group-members commits as a template): an endpoint handler in `whatsapp-bridge/main.go`, an implementation function in `whatsapp.py` that calls it, and an `@mcp.tool()` wrapper in `main.py`.
+Other env vars (all read in `config.py`): `WHATSAPP_MCP_ALLOWED_MEDIA_DIRS` (allowlist for outbound media paths, separated by `os.pathsep` — `:` on Unix, `;` on Windows; unset = any existing file), `WHATSAPP_MCP_SEND_RATE_LIMIT` (max sends/minute across the three send tools, default 30, `0` disables), `WHATSAPP_MCP_LOG_LEVEL` (stderr log level, default INFO — stdout carries only JSON-RPC).
+
+**Adding a tool that needs live WhatsApp data touches four places** (see recent group-members commits as a template): an endpoint handler in `whatsapp-bridge/main.go`, an implementation function in `whatsapp-mcp-server/api_client.py` that calls it, a re-export in `whatsapp.py`, and an `@mcp.tool()` wrapper in `tools_send.py` (read-only tools go in `tools_read.py`, backed by `db_chats.py`/`db_messages.py`).
 
 ### Storage
 

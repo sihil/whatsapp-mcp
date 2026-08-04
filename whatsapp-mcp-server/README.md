@@ -1,0 +1,98 @@
+# whatsapp-mcp-server
+
+Python MCP server (FastMCP, stdio transport) that exposes WhatsApp search/read/send
+tools to an MCP client (Claude Desktop, Cursor). It works together with the Go
+bridge in `../whatsapp-bridge/` — see the repo-root `README.md` for the full setup
+(running the bridge, QR/pairing auth) and the repo-root `CLAUDE.md` for architecture
+notes.
+
+## Data flow
+
+- **Reads** (`search_contacts`, `list_messages`, `list_chats`, `get_chat`,
+  `get_direct_chat_by_contact`, `get_contact_chats`, `get_last_interaction`,
+  `get_message_context`) query the bridge's SQLite database **directly**,
+  read-only. The Go bridge does not need to be running for these to work, as
+  long as `messages.db` already exists.
+- **Writes / live actions** (`send_message`, `send_file`, `send_audio_message`,
+  `download_media`, `list_group_members`) call the bridge's REST API at
+  `http://localhost:8080/api` (or `WHATSAPP_API_BASE_URL`), which talks to
+  WhatsApp. The bridge must be running for these.
+
+## Running
+
+Normally launched by an MCP client via stdio, not run directly. Example Claude
+Desktop / Cursor config entry:
+
+```json
+{
+  "mcpServers": {
+    "whatsapp": {
+      "command": "/path/to/uv",
+      "args": [
+        "--directory",
+        "/path/to/whatsapp-mcp/whatsapp-mcp-server",
+        "run",
+        "main.py"
+      ]
+    }
+  }
+}
+```
+
+To run it standalone (e.g. for debugging):
+
+```bash
+uv run main.py
+```
+
+## Data paths
+
+- `messages.db` — read directly by this server (`db.py`). Default location:
+  `../whatsapp-bridge/store/messages.db`, resolved relative to this directory.
+  Contains the `chats`, `messages`, and `jid_aliases` tables written by the Go
+  bridge. Override with `WHATSAPP_MCP_DB_PATH`.
+- Everything else (sending messages/media, downloading media, listing group
+  members) goes over HTTP to the bridge's REST API, not to any local file.
+
+## Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `WHATSAPP_MCP_DB_PATH` | `../whatsapp-bridge/store/messages.db` (relative to this dir) | Overrides the path to the bridge's message store, opened read-only. |
+| `WHATSAPP_API_BASE_URL` | `http://localhost:8080/api` | Overrides the bridge's REST API base URL. |
+| `WHATSAPP_MCP_ALLOWED_MEDIA_DIRS` | unset (no restriction) | Allowlist of directories that outbound media files (for `send_file`/`send_audio_message`) must live under, separated by `os.pathsep` (`:` on Unix, `;` on Windows). Paths are resolved with `realpath` before comparison, but the caller's original path is what gets sent. Unset means any existing file is allowed. |
+| `WHATSAPP_MCP_SEND_RATE_LIMIT` | `30` | Max outbound sends (across `send_message`, `send_file`, `send_audio_message`) per rolling minute. `0` or a negative value disables the limiter. |
+| `WHATSAPP_MCP_LOG_LEVEL` | `INFO` | Log level for the server's stderr logging. stdout carries only JSON-RPC — nothing is ever printed to stdout. |
+
+## FFmpeg
+
+FFmpeg is optional and only used by `send_audio_message` to convert non-Opus
+audio files to `.ogg` Opus (the format WhatsApp requires for playable voice
+messages). Without FFmpeg installed, `send_audio_message` will fail on
+non-Opus input; raw audio can still be sent via `send_file` (it just won't
+render as a playable voice message).
+
+## Module layout
+
+- `main.py` — entrypoint; imports `server` and the tool modules, runs the
+  stdio transport.
+- `server.py` — the shared `FastMCP` instance.
+- `config.py` — env var reads, logging setup.
+- `tools_read.py` / `tools_send.py` — the `@mcp.tool()` wrappers.
+- `models.py` — dataclasses for messages/chats/contacts.
+- `db.py`, `db_chats.py`, `db_messages.py` — SQLite read layer.
+- `api_client.py` — REST calls to the bridge (send/download/group members),
+  rate limiting, media-path validation.
+- `whatsapp.py` — thin façade re-exporting the public functions for backward
+  compatible imports.
+- `audio.py` — FFmpeg conversion helper.
+
+Two names that used to live in `whatsapp.py` are gone on purpose, since both
+are now env-overridable and therefore read at call time, not import time:
+`MESSAGES_DB_PATH` → `config.messages_db_path()` (re-exported as
+`whatsapp.messages_db_path`) and `WHATSAPP_API_BASE_URL` →
+`config.api_base_url()` (re-exported as `whatsapp.api_base_url`).
+`format_messages_list` is also gone: the read tools now return structured
+dicts, so only `format_message` (used by `get_last_interaction`) remains.
+
+There are no Python tests configured for this package.
