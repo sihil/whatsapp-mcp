@@ -10,17 +10,24 @@ _CHAT_WITH_LAST_MESSAGE = """
     FROM chats c
     LEFT JOIN messages m ON c.jid = m.chat_jid AND c.last_message_time = m.timestamp
 """
-# Without the join there is no messages row to read the last-message columns
-# from, so select NULLs in their place and keep the row shape identical.
 _CHAT_ONLY = "SELECT c.jid, c.name, c.last_message_time, NULL, NULL, NULL FROM chats c"
 
 
 def _chat_query(include_last_message: bool, where: str = "", suffix: str = "") -> str:
     """Build a chat query, optionally joined to the message at
-    `last_message_time`."""
+    `last_message_time`.
+
+    Always groups by chat. The join matches on timestamp equality, and
+    WhatsApp timestamps are second-granularity, so a chat whose last second
+    holds more than one message would otherwise be emitted once per message —
+    duplicating it in the results and consuming two LIMIT slots, which pushes
+    another chat off the page entirely (and off every later page too, since
+    OFFSET then counts the duplicates).
+    """
     parts = [_CHAT_WITH_LAST_MESSAGE if include_last_message else _CHAT_ONLY]
     if where:
         parts.append(where)
+    parts.append("GROUP BY c.jid")
     if suffix:
         parts.append(suffix)
     return " ".join(parts)
