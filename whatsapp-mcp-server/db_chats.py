@@ -49,23 +49,32 @@ def list_chats(
     try:
         cursor = conn.cursor()
 
-        # Build base query
-        query_parts = ["""
-            SELECT
-                chats.jid,
-                chats.name,
-                chats.last_message_time,
-                messages.content as last_message,
-                messages.sender as last_sender,
-                messages.is_from_me as last_is_from_me
-            FROM chats
-        """]
-
+        # Build base query. Without the join there is no messages row to read
+        # the last-message columns from, so select NULLs in their place.
         if include_last_message:
-            query_parts.append("""
+            query_parts = ["""
+                SELECT
+                    chats.jid,
+                    chats.name,
+                    chats.last_message_time,
+                    messages.content as last_message,
+                    messages.sender as last_sender,
+                    messages.is_from_me as last_is_from_me
+                FROM chats
                 LEFT JOIN messages ON chats.jid = messages.chat_jid
                 AND chats.last_message_time = messages.timestamp
-            """)
+            """]
+        else:
+            query_parts = ["""
+                SELECT
+                    chats.jid,
+                    chats.name,
+                    chats.last_message_time,
+                    NULL as last_message,
+                    NULL as last_sender,
+                    NULL as last_is_from_me
+                FROM chats
+            """]
 
         where_clauses = []
         params = []
@@ -245,21 +254,29 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]
     try:
         cursor = conn.cursor()
 
-        query = """
-            SELECT
-                c.jid,
-                c.name,
-                c.last_message_time,
-                m.content as last_message,
-                m.sender as last_sender,
-                m.is_from_me as last_is_from_me
-            FROM chats c
-        """
-
         if include_last_message:
-            query += """
+            query = """
+                SELECT
+                    c.jid,
+                    c.name,
+                    c.last_message_time,
+                    m.content as last_message,
+                    m.sender as last_sender,
+                    m.is_from_me as last_is_from_me
+                FROM chats c
                 LEFT JOIN messages m ON c.jid = m.chat_jid
                 AND c.last_message_time = m.timestamp
+            """
+        else:
+            query = """
+                SELECT
+                    c.jid,
+                    c.name,
+                    c.last_message_time,
+                    NULL as last_message,
+                    NULL as last_sender,
+                    NULL as last_is_from_me
+                FROM chats c
             """
 
         query += " WHERE c.jid = ?"
