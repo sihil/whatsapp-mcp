@@ -485,6 +485,7 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
         
+        resolved_jid = _resolve_chat_jid(cursor, _canonical_jid(jid))
         cursor.execute("""
             SELECT DISTINCT
                 c.jid,
@@ -498,8 +499,7 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
             WHERE m.sender IN (?, ?) OR c.jid IN (?, ?)
             ORDER BY c.last_message_time DESC
             LIMIT ? OFFSET ?
-        """, (jid, _resolve_chat_jid(cursor, _canonical_jid(jid)),
-              jid, _resolve_chat_jid(cursor, _canonical_jid(jid)), limit, page * limit))
+        """, (jid, resolved_jid, jid, resolved_jid, limit, page * limit))
         
         chats = cursor.fetchall()
         
@@ -531,8 +531,9 @@ def get_last_interaction(jid: str) -> str:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
         
+        resolved_jid = _resolve_chat_jid(cursor, _canonical_jid(jid))
         cursor.execute("""
-            SELECT 
+            SELECT
                 m.timestamp,
                 m.sender,
                 c.name,
@@ -546,8 +547,7 @@ def get_last_interaction(jid: str) -> str:
             WHERE m.sender IN (?, ?) OR c.jid IN (?, ?)
             ORDER BY m.timestamp DESC
             LIMIT 1
-        """, (jid, _resolve_chat_jid(cursor, _canonical_jid(jid)),
-              jid, _resolve_chat_jid(cursor, _canonical_jid(jid))))
+        """, (jid, resolved_jid, jid, resolved_jid))
         
         msg_data = cursor.fetchone()
         
