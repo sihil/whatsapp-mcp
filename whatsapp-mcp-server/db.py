@@ -1,14 +1,33 @@
-"""Access to the bridge's SQLite message store: connection handling and
-JID/alias resolution shared by the query modules."""
+"""Read-only access to the bridge's SQLite message store: connection handling
+and JID/alias resolution shared by the query modules."""
+import os
 import sqlite3
 from typing import Optional
+from urllib.parse import quote
 
 from config import MESSAGES_DB_PATH
 
 
 def connect() -> sqlite3.Connection:
-    """Open the messages DB."""
-    return sqlite3.connect(MESSAGES_DB_PATH)
+    """Open the messages DB, read-only where possible.
+
+    The bridge (see whatsapp-bridge/main.go NewMessageStore) uses SQLite's
+    default rollback-journal mode. A hot journal — left behind when the bridge
+    crashes mid-write — has to be replayed before the database can be read at
+    all, and SQLite can only do that through a writable connection: a mode=ro
+    open would fail every read with SQLITE_READONLY_ROLLBACK. So fall back to
+    a read-write open for exactly that case, and stay read-only otherwise.
+    """
+    path = MESSAGES_DB_PATH
+    if not os.path.isfile(path):
+        raise RuntimeError(
+            f"messages.db not found at {path} — start the bridge first: "
+            "cd whatsapp-bridge && go run ."
+        )
+    journal = f"{path}-journal"
+    if os.path.isfile(journal) and os.path.getsize(journal) > 0:
+        return sqlite3.connect(path)
+    return sqlite3.connect(f"file:{quote(path)}?mode=ro", uri=True)
 
 
 def escape_like(term: str, escape_char: str = "\\") -> str:
