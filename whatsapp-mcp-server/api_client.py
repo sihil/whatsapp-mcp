@@ -175,22 +175,31 @@ def send_audio_message(recipient: str, media_path: str, reply_to: Optional[str] 
 
     validated_path = _validate_media_path(media_path)
 
+    temp_path = None
     send_path = validated_path
     if not validated_path.endswith(".ogg"):
         try:
-            send_path = audio.convert_to_opus_ogg_temp(validated_path)
+            temp_path = audio.convert_to_opus_ogg_temp(validated_path)
         except Exception as e:
             raise RuntimeError(
                 f"Error converting file to opus ogg. You likely need to install ffmpeg: {e}"
             ) from e
+        send_path = temp_path
 
-    payload = {
-        "recipient": recipient,
-        "media_path": send_path
-    }
-    if reply_to:
-        payload["reply_to"] = reply_to
-    return _post_send(payload)
+    try:
+        payload = {
+            "recipient": recipient,
+            "media_path": send_path
+        }
+        if reply_to:
+            payload["reply_to"] = reply_to
+        return _post_send(payload)
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError as e:
+                logger.warning(f"Failed to clean up temp ogg file {temp_path}: {e}")
 
 
 def download_media(message_id: str, chat_jid: str) -> Tuple[Optional[str], str]:
