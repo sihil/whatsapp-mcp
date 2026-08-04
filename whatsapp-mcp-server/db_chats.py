@@ -155,20 +155,15 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
         cursor = conn.cursor()
 
         resolved_jid = resolve_chat_jid(cursor, canonical_jid(jid))
-        cursor.execute("""
-            SELECT DISTINCT
-                c.jid,
-                c.name,
-                c.last_message_time,
-                m.content as last_message,
-                m.sender as last_sender,
-                m.is_from_me as last_is_from_me
-            FROM chats c
-            JOIN messages m ON c.jid = m.chat_jid
-            WHERE m.sender IN (?, ?) OR c.jid IN (?, ?)
-            ORDER BY c.last_message_time DESC
-            LIMIT ? OFFSET ?
-        """, (jid, resolved_jid, jid, resolved_jid, limit, page * limit))
+        cursor.execute(
+            _chat_query(
+                True,
+                "WHERE c.jid IN (?, ?) "
+                "OR c.jid IN (SELECT chat_jid FROM messages WHERE sender IN (?, ?))",
+                "ORDER BY c.last_message_time DESC LIMIT ? OFFSET ?",
+            ),
+            (jid, resolved_jid, jid, resolved_jid, limit, page * limit),
+        )
 
         chats = cursor.fetchall()
 
