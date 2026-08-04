@@ -2,10 +2,16 @@
 and JID/alias resolution shared by the query modules."""
 import os
 import sqlite3
+from datetime import datetime
 from typing import Optional
 from urllib.parse import quote
 
 from config import messages_db_path
+
+# Stored timestamps carry the offset Go wrote them with, so they can only be
+# compared against a caller-supplied instant once both sides are resolved to
+# UTC. SQLite's datetime() does that for any offset-bearing ISO-8601 string.
+DATE_EXPR = "datetime(messages.timestamp)"
 
 
 def connect() -> sqlite3.Connection:
@@ -61,6 +67,30 @@ def resolve_chat_jid(cursor, jid: Optional[str]) -> Optional[str]:
     except sqlite3.OperationalError:
         # Table absent: DB written by a bridge from before aliases existed.
         return jid
+
+
+def parse_date_param(value: str, field: str) -> str:
+    """Validate an ISO-8601 argument and return it in a form SQLite's
+    `datetime()` can normalize. Never bind datetime objects: their sqlite3
+    adapters are deprecated in 3.12.
+
+    Always carries an explicit offset. The bridge stores Go time.Time values
+    rendered in local time ("2025-08-04 14:23:11-07:00"), so comparing raw
+    strings only works when the argument happens to carry the same offset —
+    "2025-08-04T20:00:00Z" would compare character-by-character as *earlier*
+    than a row that is genuinely after it. Both sides go through
+    `DATE_EXPR` instead, which resolves each to UTC before comparing. A
+    naive argument is taken as local time, which is how a user means it.
+    """
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        raise ValueError(
+            f"Invalid date format for '{field}': {value}. Please use ISO-8601 format."
+        )
+    # astimezone() attaches the local zone to a naive value and converts an
+    # aware one; either way the result is unambiguous.
+    return parsed.astimezone().isoformat(sep=" ")
 
 
 def get_sender_name(sender_jid: str) -> str:

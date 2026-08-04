@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Optional
 
-from db import canonical_jid, connect, escape_like, resolve_chat_jid
+from db import DATE_EXPR, canonical_jid, connect, escape_like, parse_date_param, resolve_chat_jid
 from db_chats import format_messages_list
 from models import Message, MessageContext
 
@@ -32,22 +32,12 @@ def list_messages(
 
         # Add filters
         if after:
-            try:
-                after = datetime.fromisoformat(after)
-            except ValueError:
-                raise ValueError(f"Invalid date format for 'after': {after}. Please use ISO-8601 format.")
-
-            where_clauses.append("messages.timestamp > ?")
-            params.append(after)
+            where_clauses.append(f"{DATE_EXPR} > datetime(?)")
+            params.append(parse_date_param(after, "after"))
 
         if before:
-            try:
-                before = datetime.fromisoformat(before)
-            except ValueError:
-                raise ValueError(f"Invalid date format for 'before': {before}. Please use ISO-8601 format.")
-
-            where_clauses.append("messages.timestamp < ?")
-            params.append(before)
+            where_clauses.append(f"{DATE_EXPR} < datetime(?)")
+            params.append(parse_date_param(before, "before"))
 
         if sender_phone_number:
             # The sender column stores full canonical JIDs; also match the
