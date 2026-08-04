@@ -75,6 +75,22 @@ def resolve_chat_jid(cursor, jid: Optional[str]) -> Optional[str]:
         return jid
 
 
+def alias_candidates(cursor: sqlite3.Cursor, jid: str) -> List[str]:
+    """Every spelling that may key rows for `jid`: the value itself, the key it
+    was merged into, and any stale keys merged into those."""
+    candidates = {jid}
+    resolved = resolve_chat_jid(cursor, jid)
+    if resolved:
+        candidates.add(resolved)
+    try:
+        for target in list(candidates):
+            cursor.execute("SELECT old_jid FROM jid_aliases WHERE new_jid = ?", (target,))
+            candidates.update(row[0] for row in cursor.fetchall())
+    except sqlite3.OperationalError:
+        pass
+    return sorted(candidates)
+
+
 def placeholders(values: Sequence[Any]) -> str:
     return ", ".join("?" * len(values))
 

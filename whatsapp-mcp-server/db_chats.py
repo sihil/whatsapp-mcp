@@ -3,12 +3,14 @@ from typing import Any, List, Optional
 
 from db import (
     MESSAGE_COLUMNS,
+    alias_candidates,
     canonical_jid,
     connect,
     escape_like,
     chat_from_row,
     get_sender_name,
     message_from_row,
+    placeholders,
     resolve_chat_jid,
     resolve_sender_names,
 )
@@ -161,15 +163,16 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
     try:
         cursor = conn.cursor()
 
-        resolved_jid = resolve_chat_jid(cursor, canonical_jid(jid))
+        candidates = alias_candidates(cursor, canonical_jid(jid))
+        slots = placeholders(candidates)
         cursor.execute(
             _chat_query(
                 True,
-                "WHERE c.jid IN (?, ?) "
-                "OR c.jid IN (SELECT chat_jid FROM messages WHERE sender IN (?, ?))",
+                f"WHERE c.jid IN ({slots}) "
+                f"OR c.jid IN (SELECT chat_jid FROM messages WHERE sender IN ({slots}))",
                 "ORDER BY c.last_message_time DESC LIMIT ? OFFSET ?",
             ),
-            (jid, resolved_jid, jid, resolved_jid, limit, page * limit),
+            tuple(candidates) * 2 + (limit, page * limit),
         )
 
         chats = cursor.fetchall()
@@ -186,15 +189,16 @@ def get_last_interaction(jid: str) -> Optional[str]:
     try:
         cursor = conn.cursor()
 
-        resolved_jid = resolve_chat_jid(cursor, canonical_jid(jid))
+        candidates = alias_candidates(cursor, canonical_jid(jid))
+        slots = placeholders(candidates)
         cursor.execute(f"""
             SELECT {MESSAGE_COLUMNS}
             FROM messages
             JOIN chats ON messages.chat_jid = chats.jid
-            WHERE messages.sender IN (?, ?) OR chats.jid IN (?, ?)
+            WHERE messages.sender IN ({slots}) OR chats.jid IN ({slots})
             ORDER BY messages.timestamp DESC
             LIMIT 1
-        """, (jid, resolved_jid, jid, resolved_jid))
+        """, tuple(candidates) * 2)
 
         row = cursor.fetchone()
 

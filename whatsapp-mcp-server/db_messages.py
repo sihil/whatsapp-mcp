@@ -5,11 +5,13 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from db import (
     DATE_EXPR,
     MESSAGE_COLUMNS,
+    alias_candidates,
     canonical_jid,
     connect,
     escape_like,
     messages_from_rows,
     parse_date_param,
+    placeholders,
     resolve_chat_jid,
 )
 from db_chats import format_messages_list
@@ -100,14 +102,17 @@ def list_messages(
             params.append(parse_date_param(before, "before"))
 
         if sender_phone_number:
-            # The sender column stores full canonical JIDs; also match the
-            # raw value for rows the bridge has not migrated yet.
-            where_clauses.append("messages.sender IN (?, ?)")
-            params.extend([sender_phone_number, canonical_jid(sender_phone_number)])
+            # The sender column stores full canonical JIDs; also match the raw
+            # value and any alias spellings the bridge has since merged.
+            candidates = alias_candidates(cursor, canonical_jid(sender_phone_number))
+            if sender_phone_number not in candidates:
+                candidates.append(sender_phone_number)
+            where_clauses.append(f"messages.sender IN ({placeholders(candidates)})")
+            params.extend(candidates)
 
         if chat_jid:
             where_clauses.append("messages.chat_jid = ?")
-            params.append(resolve_chat_jid(cursor, chat_jid))
+            params.append(resolve_chat_jid(cursor, canonical_jid(chat_jid)))
 
         if query:
             where_clauses.append("LOWER(messages.content) LIKE LOWER(?) ESCAPE '\\'")
@@ -166,7 +171,7 @@ def get_message_context(
         params = [message_id]
         if chat_jid:
             query += " AND messages.chat_jid = ?"
-            params.append(resolve_chat_jid(cursor, chat_jid))
+            params.append(resolve_chat_jid(cursor, canonical_jid(chat_jid)))
         cursor.execute(query, params)
         msg_data = cursor.fetchone()
 
