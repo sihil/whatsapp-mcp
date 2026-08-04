@@ -1,25 +1,54 @@
 """REST calls to the Go bridge (sends, media downloads, live group data).
 
-Send-path validation lives here rather than in the tool wrappers, so the
-recipient and media-path checks apply regardless of caller. Validation
-failures raise ValueError; bridge communication failures come back as a
-(False, message) tuple for the caller to turn into a RuntimeError.
+Send-path validation lives here rather than in the tool wrappers: recipient/
+media-path checks and the media directory allowlist apply regardless of
+caller. Validation failures raise ValueError; bridge communication failures
+come back as a (False, message) tuple for the caller to turn into a
+RuntimeError.
 """
 import json
 import logging
-import os.path
+import os
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import requests
 
 import audio
-from config import BRIDGE_DOWN_HINT, api_base_url
+from config import BRIDGE_DOWN_HINT, allowed_media_dirs, api_base_url
 
 logger = logging.getLogger(__name__)
 
 # A /send call blocks for the bridge's entire upload to WhatsApp, so this
 # bounds a large media transfer over a slow link, not a quick round trip.
 _SEND_READ_TIMEOUT = 600
+
+
+def _validate_media_path(media_path: str) -> str:
+    """Confirm `media_path` is an existing file and, when
+    WHATSAPP_MCP_ALLOWED_MEDIA_DIRS is set, that it resolves inside one of
+    those directories.
+
+    Returns the caller's path, not the resolved one: the allowlist check has
+    to follow symlinks (or it could be walked around), but the bridge derives
+    the document title, MIME type and media class from the path string it is
+    given, so sending the resolved target of a symlink would rename the file
+    and mistype it for the recipient.
+    """
+    real_path = os.path.realpath(media_path)
+    if not os.path.isfile(real_path):
+        raise ValueError(f"Media file not found: {media_path}")
+
+    allowed_dirs = allowed_media_dirs()
+    if allowed_dirs is not None and not any(
+        # Both sides are already realpaths, so a lexical check is exact.
+        Path(real_path).is_relative_to(directory) for directory in allowed_dirs
+    ):
+        raise ValueError(
+            f"Media file {media_path} is outside the allowed directories "
+            f"({', '.join(allowed_dirs)}). Set WHATSAPP_MCP_ALLOWED_MEDIA_DIRS to permit it."
+        )
+    return media_path
 
 
 def _post(
@@ -78,12 +107,11 @@ def send_file(recipient: str, media_path: str, reply_to: Optional[str] = None) -
         raise ValueError("Recipient must be provided")
     if not media_path:
         raise ValueError("Media path must be provided")
-    if not os.path.isfile(media_path):
-        raise ValueError(f"Media file not found: {media_path}")
 
+    validated_path = _validate_media_path(media_path)
     payload = {
         "recipient": recipient,
-        "media_path": media_path
+        "media_path": validated_path
     }
     if reply_to:
         payload["reply_to"] = reply_to
@@ -95,12 +123,13 @@ def send_audio_message(recipient: str, media_path: str, reply_to: Optional[str] 
         raise ValueError("Recipient must be provided")
     if not media_path:
         raise ValueError("Media path must be provided")
-    if not os.path.isfile(media_path):
-        raise ValueError(f"Media file not found: {media_path}")
 
-    if not media_path.endswith(".ogg"):
+    validated_path = _validate_media_path(media_path)
+
+    send_path = validated_path
+    if not validated_path.endswith(".ogg"):
         try:
-            media_path = audio.convert_to_opus_ogg_temp(media_path)
+            send_path = audio.convert_to_opus_ogg_temp(validated_path)
         except Exception as e:
             raise RuntimeError(
                 f"Error converting file to opus ogg. You likely need to install ffmpeg: {e}"
@@ -108,7 +137,7 @@ def send_audio_message(recipient: str, media_path: str, reply_to: Optional[str] 
 
     payload = {
         "recipient": recipient,
-        "media_path": media_path
+        "media_path": send_path
     }
     if reply_to:
         payload["reply_to"] = reply_to
