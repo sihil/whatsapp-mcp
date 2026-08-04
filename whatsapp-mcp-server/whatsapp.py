@@ -23,12 +23,11 @@ from db_chats import (
     search_contacts,
 )
 from db_messages import get_message_context, list_messages
-from models import Chat, Contact, GroupMember, Message, MessageContext
+from models import Chat, Contact, Message, MessageContext
 
 __all__ = [
     "Chat",
     "Contact",
-    "GroupMember",
     "MESSAGES_DB_PATH",
     "Message",
     "MessageContext",

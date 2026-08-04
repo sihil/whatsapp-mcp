@@ -39,15 +39,6 @@ class Contact:
 
 
 @dataclass
-class GroupMember:
-    jid: str
-    phone_number: Optional[str]
-    display_name: Optional[str]
-    is_admin: bool
-    is_super_admin: bool
-
-
-@dataclass
 class MessageContext:
     message: Message
     before: List[Message]
