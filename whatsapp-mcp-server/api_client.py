@@ -1,5 +1,6 @@
 """REST calls to the Go bridge (sends, media downloads, live group data)."""
 import json
+import logging
 import os.path
 from typing import Dict, Optional, Tuple
 
@@ -7,6 +8,8 @@ import requests
 
 import audio
 from config import api_base_url
+
+logger = logging.getLogger(__name__)
 
 
 def _post_send(payload: Dict[str, str]) -> Tuple[bool, str]:
@@ -108,23 +111,23 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
             result = response.json()
             if result.get("success", False):
                 path = result.get("path")
-                print(f"Media downloaded successfully: {path}")
+                logger.info(f"Media downloaded successfully: {path}")
                 return path
             else:
-                print(f"Download failed: {result.get('message', 'Unknown error')}")
+                logger.warning(f"Download failed: {result.get('message', 'Unknown error')}")
                 return None
         else:
-            print(f"Error: HTTP {response.status_code} - {response.text}")
+            logger.error(f"Error: HTTP {response.status_code} - {response.text}")
             return None
 
     except requests.RequestException as e:
-        print(f"Request error: {str(e)}")
+        logger.error(f"Request error: {str(e)}")
         return None
     except json.JSONDecodeError:
-        print(f"Error parsing response: {response.text}")
+        logger.error(f"Error parsing response: {response.text}")
         return None
     except Exception as e:
-        print(f"Unexpected error: {str(e)}")
+        logger.error(f"Unexpected error: {str(e)}")
         return None
 
 
