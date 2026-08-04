@@ -14,7 +14,6 @@ from db import (
     placeholders,
     resolve_chat_jid,
 )
-from db_chats import format_messages_list
 from models import Message, MessageContext
 
 _MESSAGE_SOURCE = f"""
@@ -81,8 +80,12 @@ def list_messages(
     include_context: bool = True,
     context_before: int = 1,
     context_after: int = 1
-) -> str:
-    """Get messages matching the specified criteria with optional context."""
+) -> List[Dict[str, Any]]:
+    """Get messages matching the specified criteria, newest first.
+
+    Without context each item is a message dict; with context each item is
+    {"message": {...}, "context_before": [...], "context_after": [...]}.
+    """
     conn = connect()
     try:
         cursor = conn.cursor()
@@ -130,25 +133,23 @@ def list_messages(
         cursor.execute(" ".join(query_parts), tuple(params))
         rows: Sequence[Sequence[Any]] = cursor.fetchall()
         name_cache: Dict[str, Optional[str]] = {}
-        result = messages_from_rows(cursor, rows, name_cache)
+        messages = messages_from_rows(cursor, rows, name_cache)
 
-        if include_context and result:
-            # Add context for each message, reusing this connection
-            messages_with_context = []
-            for row, message in zip(rows, result):
-                context_before_msgs, context_after_msgs = _context_around(
-                    cursor, message.chat_jid, message.id, row[5],
-                    context_before, context_after, name_cache
-                )
-                messages_with_context.extend(context_before_msgs)
-                messages_with_context.append(message)
-                messages_with_context.extend(context_after_msgs)
+        if not include_context:
+            return [message.to_dict() for message in messages]
 
-            return format_messages_list(messages_with_context, show_chat_info=True)
-
-        # Format and display messages without context
-        return format_messages_list(result, show_chat_info=True)
-
+        results: List[Dict[str, Any]] = []
+        for row, message in zip(rows, messages):
+            context_before_msgs, context_after_msgs = _context_around(
+                cursor, message.chat_jid, message.id, row[5],
+                context_before, context_after, name_cache
+            )
+            results.append({
+                "message": message.to_dict(),
+                "context_before": [msg.to_dict() for msg in context_before_msgs],
+                "context_after": [msg.to_dict() for msg in context_after_msgs],
+            })
+        return results
     finally:
         conn.close()
 
@@ -158,7 +159,7 @@ def get_message_context(
     before: int = 5,
     after: int = 5,
     chat_jid: Optional[str] = None
-) -> MessageContext:
+) -> Dict[str, Any]:
     """Get context around a specific message. Message IDs are only unique per
     chat ((id, chat_jid) is the primary key), so pass chat_jid to disambiguate
     when known."""
@@ -187,10 +188,7 @@ def get_message_context(
         )
 
         return MessageContext(
-            message=target_message,
-            before=before_messages,
-            after=after_messages
-        )
-
+            message=target_message, before=before_messages, after=after_messages
+        ).to_dict()
     finally:
         conn.close()

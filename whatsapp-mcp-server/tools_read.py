@@ -17,7 +17,8 @@ from whatsapp import (
 
 @mcp.tool()
 def search_contacts(query: str, limit: int = 50) -> List[Dict[str, Any]]:
-    """Search WhatsApp contacts by name or phone number.
+    """Search WhatsApp contacts by name or phone number. Returns a list of
+    contacts, each with phone_number, name and jid.
 
     Args:
         query: Search term to match against contact names or phone numbers
@@ -40,7 +41,11 @@ def list_messages(
     context_before: int = 1,
     context_after: int = 1
 ) -> List[Dict[str, Any]]:
-    """Get WhatsApp messages matching specified criteria with optional context.
+    """Get WhatsApp messages matching specified criteria with optional context,
+    newest first. With include_context each item is {"message": {...},
+    "context_before": [...], "context_after": [...]}; without it each item is a
+    message dict (id, chat_jid, chat_name, sender, sender_name, timestamp,
+    content, is_from_me, media_type).
 
     Args:
         after: Optional ISO-8601 formatted string to only return messages after this date
@@ -77,7 +82,9 @@ def list_chats(
     include_last_message: bool = True,
     sort_by: str = "last_active"
 ) -> List[Dict[str, Any]]:
-    """Get WhatsApp chats matching specified criteria.
+    """Get WhatsApp chats matching specified criteria. Returns a list of chat
+    dicts (jid, name, is_group, last_message_time, last_message, last_sender,
+    last_is_from_me).
 
     Args:
         query: Optional search term to filter chats by name or JID
@@ -98,7 +105,7 @@ def list_chats(
 
 @mcp.tool()
 def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]:
-    """Get WhatsApp chat metadata by JID.
+    """Get WhatsApp chat metadata by JID. Errors when no such chat exists.
 
     Args:
         chat_jid: The JID of the chat to retrieve
@@ -110,7 +117,8 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]
 
 @mcp.tool()
 def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
-    """Get WhatsApp chat metadata by sender phone number.
+    """Get WhatsApp direct (non-group) chat metadata by contact phone number.
+    Errors when no chat matches or when several contacts match ambiguously.
 
     Args:
         sender_phone_number: The phone number to search for
@@ -134,7 +142,8 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Dict[str
 
 @mcp.tool()
 def get_last_interaction(jid: str) -> str:
-    """Get most recent WhatsApp message involving the contact.
+    """Get most recent WhatsApp message involving the contact, as a formatted
+    line. Errors when there is no message involving the contact.
 
     Args:
         jid: The JID of the contact to search for
@@ -150,7 +159,9 @@ def get_message_context(
     after: int = 5,
     chat_jid: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Get context around a specific WhatsApp message.
+    """Get context around a specific WhatsApp message. Returns {"message":
+    {...}, "before": [...], "after": [...]}, the context lists in
+    chronological order. Errors when the message is not found.
 
     Args:
         message_id: The ID of the message to get context for

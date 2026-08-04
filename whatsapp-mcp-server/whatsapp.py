@@ -14,7 +14,6 @@ from config import api_base_url, messages_db_path
 from db import get_sender_name
 from db_chats import (
     format_message,
-    format_messages_list,
     get_chat,
     get_contact_chats,
     get_direct_chat_by_contact,
@@ -33,7 +32,6 @@ __all__ = [
     "api_base_url",
     "download_media",
     "format_message",
-    "format_messages_list",
     "get_chat",
     "get_contact_chats",
     "get_direct_chat_by_contact",

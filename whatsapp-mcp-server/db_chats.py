@@ -1,5 +1,5 @@
 """Chat and contact queries against the bridge's message store."""
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from db import (
     MESSAGE_COLUMNS,
@@ -14,7 +14,7 @@ from db import (
     resolve_chat_jid,
     resolve_sender_names,
 )
-from models import Chat, Contact, Message
+from models import Contact, Message
 
 _CHAT_WITH_LAST_MESSAGE = """
     SELECT c.jid, c.name, c.last_message_time, m.content, m.sender, m.is_from_me
@@ -67,24 +67,13 @@ def format_message(message: Message, show_chat_info: bool = True, cursor=None) -
     return output
 
 
-def format_messages_list(messages: List[Message], show_chat_info: bool = True) -> str:
-    output = ""
-    if not messages:
-        output += "No messages to display."
-        return output
-
-    for message in messages:
-        output += format_message(message, show_chat_info)
-    return output
-
-
 def list_chats(
     query: Optional[str] = None,
     limit: int = 20,
     page: int = 0,
     include_last_message: bool = True,
     sort_by: str = "last_active"
-) -> List[Chat]:
+) -> List[Dict[str, Any]]:
     """Get chats matching the specified criteria."""
     conn = connect()
     try:
@@ -106,15 +95,12 @@ def list_chats(
             ),
             tuple(params),
         )
-        chats = cursor.fetchall()
-
-        return [chat_from_row(row) for row in chats]
-
+        return [chat_from_row(row).to_dict() for row in cursor.fetchall()]
     finally:
         conn.close()
 
 
-def search_contacts(query: str, limit: int = 50) -> List[Contact]:
+def search_contacts(query: str, limit: int = 50) -> List[Dict[str, Any]]:
     """Search contacts by name or phone number."""
     conn = connect()
     try:
@@ -137,24 +123,15 @@ def search_contacts(query: str, limit: int = 50) -> List[Contact]:
             LIMIT ?
         """, (search_pattern, search_pattern, limit))
 
-        contacts = cursor.fetchall()
-
-        result = []
-        for contact_data in contacts:
-            contact = Contact(
-                phone_number=contact_data[0].split('@')[0],
-                name=contact_data[1],
-                jid=contact_data[0]
-            )
-            result.append(contact)
-
-        return result
-
+        return [
+            Contact(phone_number=row[0].split('@')[0], name=row[1], jid=row[0]).to_dict()
+            for row in cursor.fetchall()
+        ]
     finally:
         conn.close()
 
 
-def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
+def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Dict[str, Any]]:
     """Get all chats involving the contact.
 
     Args:
@@ -178,16 +155,13 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
             tuple(candidates) * 2 + (limit, page * limit),
         )
 
-        chats = cursor.fetchall()
-
-        return [chat_from_row(row) for row in chats]
-
+        return [chat_from_row(row).to_dict() for row in cursor.fetchall()]
     finally:
         conn.close()
 
 
-def get_last_interaction(jid: str) -> Optional[str]:
-    """Get most recent message involving the contact."""
+def get_last_interaction(jid: str) -> str:
+    """Get most recent message involving the contact, as a formatted line."""
     conn = connect()
     try:
         cursor = conn.cursor()
@@ -204,9 +178,8 @@ def get_last_interaction(jid: str) -> Optional[str]:
         """, tuple(candidates) * 2)
 
         row = cursor.fetchone()
-
         if not row:
-            return None
+            raise ValueError(f"No messages found involving {jid}")
 
         names = resolve_sender_names(cursor, [row[3]] if not row[6] else [])
         return format_message(message_from_row(row, names), cursor=cursor)
@@ -215,7 +188,7 @@ def get_last_interaction(jid: str) -> Optional[str]:
         conn.close()
 
 
-def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]:
+def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]:
     """Get chat metadata by JID."""
     conn = connect()
     try:
@@ -223,13 +196,10 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]
 
         resolved_jid = resolve_chat_jid(cursor, canonical_jid(chat_jid))
         cursor.execute(_chat_query(include_last_message, "WHERE c.jid = ?"), (resolved_jid,))
-        chat_data = cursor.fetchone()
-
-        if not chat_data:
-            return None
-
-        return chat_from_row(chat_data)
-
+        row = cursor.fetchone()
+        if not row:
+            raise ValueError(f"No chat found with JID {chat_jid}")
+        return chat_from_row(row).to_dict()
     finally:
         conn.close()
 
@@ -240,7 +210,7 @@ def _phone_digits(value: str) -> str:
     return "".join(char for char in value.split("@")[0] if char.isdigit())
 
 
-def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
+def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
     """Get direct (non-group) chat metadata by contact phone number, matching
     the JID's user part exactly before falling back to a suffix match."""
     digits = _phone_digits(sender_phone_number or "")
@@ -288,11 +258,10 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
                         rows = merged_rows
 
         if not rows:
-            return None
+            raise ValueError(f"No direct chat found for {sender_phone_number}")
 
         resolved = resolve_chat_jid(cursor, canonical)
         row = next((candidate for candidate in rows if candidate[0] == resolved), rows[0])
-        return chat_from_row(row)
-
+        return chat_from_row(row).to_dict()
     finally:
         conn.close()
