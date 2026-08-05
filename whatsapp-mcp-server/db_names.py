@@ -62,8 +62,14 @@ def chat_name_expr(with_contacts: bool, chat: str = "c", contact: str = "ct") ->
     including every chat whose stored name was a bare phone number until the
     bridge cleared it. Select, filter and order by this rather than a raw
     `name` column; pair it with `contacts_join`.
+
+    Groups are exempt from the digits rule: a group name is set by a person and
+    has no contact behind it to fall back to, so "2024" is a real group name.
     """
-    name = named(f"{chat}.name")
+    name = (
+        f"CASE WHEN {chat}.jid LIKE '%@g.us' THEN NULLIF(TRIM({chat}.name), '') "
+        f"ELSE {named(chat + '.name')} END"
+    )
     if not with_contacts:
         return name
     return f"COALESCE({name}, {contact_name_expr(contact + '.')})"
