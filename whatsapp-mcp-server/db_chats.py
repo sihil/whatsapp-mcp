@@ -98,7 +98,12 @@ def list_chats(
             )
             params.extend([f"%{escaped_query}%", f"%{escaped_query}%"])
 
-        order_by = "c.last_message_time DESC" if sort_by == "last_active" else name_expr
+        # Nameless chats sort first under a bare name sort (SQLite puts NULL
+        # first), so a caller asking for chats by name got a page of nulls.
+        order_by = (
+            "c.last_message_time DESC" if sort_by == "last_active"
+            else f"({name_expr} IS NULL), {name_expr}"
+        )
         params.extend([limit, page * limit])
 
         cursor.execute(
