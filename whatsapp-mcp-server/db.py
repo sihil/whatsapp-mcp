@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 from urllib.parse import quote
 
 from config import messages_db_path
-from db_names import contact_name_expr, contacts_available, named
+from db_names import contacts_available, named
 from models import Chat, Message
 
 # Stored timestamps carry the offset Go wrote them with, so they can only be
@@ -120,7 +120,7 @@ def resolve_sender_names(
     senders: Iterable[str],
     cache: Optional[Dict[str, Optional[str]]] = None,
 ) -> Dict[str, str]:
-    """Map sender JIDs to display names in one bulk query plus one fallback
+    """Map sender JIDs to display names in two bulk queries plus one fallback
     lookup per still-unresolved sender, rather than one connection per message.
     Pass a `cache` dict (misses included) to resolve each JID at most once
     across several batches, e.g. a listing and its per-match context windows."""
@@ -141,27 +141,33 @@ def resolve_sender_names(
         return names
 
     # contacts covers everyone the bridge has ever seen, including group
-    # participants who have no chat of their own; chats covers names the user
-    # set on a conversation. Contacts first: it is the more specific source.
+    # participants who have no chat of their own; chats covers names attached
+    # to a conversation. Both are consulted, then ranked below.
+    contact_names: Dict[str, Sequence[Optional[str]]] = {}
     if contacts_available(cursor):
         cursor.execute(
-            f"SELECT jid, {contact_name_expr()} FROM contacts "
+            f"SELECT jid, {named('full_name')}, {named('push_name')}, "
+            f"{named('business_name')} FROM contacts "
             f"WHERE jid IN ({placeholders(pending)})",
             tuple(pending),
         )
-        for jid, name in cursor.fetchall():
-            if name:
-                names[jid] = name
+        contact_names = {row[0]: row[1:] for row in cursor.fetchall()}
 
-    unresolved = [sender for sender in pending if sender not in names]
-    if unresolved:
-        cursor.execute(
-            f"SELECT jid, {named('name')} FROM chats WHERE jid IN ({placeholders(unresolved)})",
-            tuple(unresolved),
-        )
-        for jid, name in cursor.fetchall():
-            if name:
-                names[jid] = name
+    cursor.execute(
+        f"SELECT jid, {named('name')} FROM chats WHERE jid IN ({placeholders(pending)})",
+        tuple(pending),
+    )
+    chat_names = {jid: name for jid, name in cursor.fetchall() if name}
+
+    # The address book outranks everything; the name on the conversation
+    # outranks a push name, which the sender chose for themselves and can be
+    # anything. Ranking push name above it labelled a chat "Mom" while
+    # labelling its sender "xX_dee_Xx" on the same line.
+    for sender in pending:
+        full, push, business = contact_names.get(sender, (None, None, None))
+        best = full or chat_names.get(sender) or push or business
+        if best:
+            names[sender] = best
 
     for sender in pending:
         if sender not in names:
