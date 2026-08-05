@@ -37,19 +37,31 @@ def search_contacts(query: str, limit: int = 50) -> List[Dict[str, Any]]:
         # chat of their own has no chats row, so ch.jid is NULL for exactly the
         # people this UNION exists to reach.
         #
-        # NULL sorts before every real name, so ordering by name alone lets
-        # bare-JID hits fill the whole limit and drop the named contacts the
-        # caller was actually looking for. Named ones first.
+        # Ordering, in priority order:
+        #
+        # People the user actually talks to come first. The address book is far
+        # larger than the set of people with a chat — thousands of entries — so
+        # a plain alphabetical sort lets it swamp the limit, and this tool has
+        # no page parameter to reach past it. A two-letter query would return
+        # address-book entries and none of the caller's actual correspondents.
+        #
+        # Then named before nameless: NULL sorts first in SQLite, so otherwise
+        # bare-JID hits fill the limit and drop the contacts that matched by
+        # name — the ones the caller was looking for.
+        #
+        # The JID match is against the user part only. Matching the whole JID
+        # searches the server too, so "net" matched every contact the user has.
         cursor.execute(f"""
             SELECT jid, name FROM (
-                SELECT cand.jid AS jid, {chat_name_expr(with_contacts, "ch")} AS name
+                SELECT cand.jid AS jid, {chat_name_expr(with_contacts, "ch")} AS name,
+                       (ch.jid IS NULL) AS no_chat
                 FROM ({" UNION ".join(sources)}) cand
                 LEFT JOIN chats ch ON ch.jid = cand.jid
                 {contacts_join(with_contacts, "cand")}
             )
             WHERE LOWER(name) LIKE LOWER(?) ESCAPE '\\'
-               OR LOWER(jid) LIKE LOWER(?) ESCAPE '\\'
-            ORDER BY (name IS NULL), name, jid
+               OR substr(jid, 1, instr(jid, '@') - 1) LIKE ? ESCAPE '\\'
+            ORDER BY no_chat, (name IS NULL), name, jid
             LIMIT ?
         """, (search_pattern, search_pattern, limit))
 
