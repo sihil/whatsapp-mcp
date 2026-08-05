@@ -69,13 +69,15 @@ func TestMigrateContactsRealStore(t *testing.T) {
 			SELECT 1 FROM chats ch WHERE ch.jid = m.sender AND ch.name GLOB '*[^0-9]*')`
 	const groupMessages = `SELECT COUNT(*) FROM messages
 		WHERE chat_jid LIKE '%@g.us' AND is_from_me = 0`
+	const numericChatNames = `SELECT COUNT(*) FROM chats
+		WHERE name IS NOT NULL AND name NOT GLOB '*[^0-9]*'`
 
 	if _, err := db.Exec(contactsSchema); err != nil {
 		t.Fatalf("creating contacts table: %v", err)
 	}
 	before := countQuery(attributable)
 	total := countQuery(groupMessages)
-	junkBefore := countQuery(`SELECT COUNT(*) FROM chats WHERE name NOT GLOB '*[^0-9]*' AND name IS NOT NULL`)
+	junkBefore := countQuery(numericChatNames)
 
 	synced, scrubbed, err := migrateContacts(ctx, db, device.Contacts, device.LIDs)
 	if err != nil {
@@ -88,7 +90,7 @@ func TestMigrateContactsRealStore(t *testing.T) {
 	if after <= before {
 		t.Errorf("attribution did not improve: %d -> %d", before, after)
 	}
-	if n := countQuery(`SELECT COUNT(*) FROM chats WHERE name NOT GLOB '*[^0-9]*' AND name IS NOT NULL`); n != 0 {
+	if n := countQuery(numericChatNames); n != 0 {
 		t.Errorf("%d phone-number chat names remain", n)
 	}
 

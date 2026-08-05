@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"testing"
-	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 	"go.mau.fi/whatsmeow/types"
@@ -79,19 +78,46 @@ func TestIsNumericName(t *testing.T) {
 	}
 }
 
+// bestContactName is what group members and DM chats are labelled with, so a
+// phone number slipping through it reaches the user as a display name.
+func TestBestContactName(t *testing.T) {
+	for _, tc := range []struct {
+		contact types.ContactInfo
+		want    string
+	}{
+		{types.ContactInfo{FullName: "Kate Sydney Cook", PushName: "Kate"}, "Kate Sydney Cook"},
+		{types.ContactInfo{PushName: "Kate"}, "Kate"},
+		{types.ContactInfo{BusinessName: "Cook Consulting"}, "Cook Consulting"},
+		// A numeric entry is skipped, not returned, so a later source can win.
+		{types.ContactInfo{FullName: "16175045529", PushName: "Kate"}, "Kate"},
+		{types.ContactInfo{FullName: "16175045529"}, ""},
+		{types.ContactInfo{}, ""},
+	} {
+		if got := bestContactName(tc.contact); got != tc.want {
+			t.Errorf("bestContactName(%+v) = %q, want %q", tc.contact, got, tc.want)
+		}
+	}
+}
+
+// putNames writes contact names, failing the test on error, and reports
+// whether anything was actually stored.
+func putNames(t *testing.T, db *sql.DB, jid, full, push, business string) bool {
+	t.Helper()
+	stored, err := putContactNames(context.Background(), db, jid, full, push, business)
+	if err != nil {
+		t.Fatalf("putContactNames(%s, %q, %q, %q): %v", jid, full, push, business, err)
+	}
+	return stored
+}
+
 // A push name arriving on a message must never overwrite the address-book name.
 func TestPutContactNamesNeverDowngrades(t *testing.T) {
 	db := newContactTestDB(t)
-	ctx := context.Background()
 	jid := "15550001001@s.whatsapp.net"
 
-	if err := putContactNames(ctx, db, jid, "Kate Sydney Cook", "Kate", ""); err != nil {
-		t.Fatalf("seeding contact: %v", err)
-	}
+	putNames(t, db, jid, "Kate Sydney Cook", "Kate", "")
 	// A later message knows only the push name.
-	if err := putContactNames(ctx, db, jid, "", "katesc", ""); err != nil {
-		t.Fatalf("push-name write: %v", err)
-	}
+	putNames(t, db, jid, "", "katesc", "")
 
 	full, push, _ := contactRow(t, db, jid)
 	if full != "Kate Sydney Cook" {
@@ -102,9 +128,7 @@ func TestPutContactNamesNeverDowngrades(t *testing.T) {
 	}
 
 	// A business name fills its own column without disturbing the others.
-	if err := putContactNames(ctx, db, jid, "", "", "Cook Consulting"); err != nil {
-		t.Fatalf("business-name write: %v", err)
-	}
+	putNames(t, db, jid, "", "", "Cook Consulting")
 	full, push, business := contactRow(t, db, jid)
 	if full != "Kate Sydney Cook" || push != "katesc" || business != "Cook Consulting" {
 		t.Errorf("got (%q, %q, %q), want all three columns intact", full, push, business)
@@ -113,15 +137,14 @@ func TestPutContactNamesNeverDowngrades(t *testing.T) {
 
 func TestPutContactNamesRejectsNonNames(t *testing.T) {
 	db := newContactTestDB(t)
-	ctx := context.Background()
 
 	// A phone number as a "name" must not be stored at all...
-	if err := putContactNames(ctx, db, "15550002002@s.whatsapp.net", "15550002002", "", ""); err != nil {
-		t.Fatalf("numeric write: %v", err)
+	if putNames(t, db, "15550002002@s.whatsapp.net", "15550002002", "", "") {
+		t.Error("reported a numeric name as stored")
 	}
 	// ...nor should an all-empty write create a row.
-	if err := putContactNames(ctx, db, "15550002003@s.whatsapp.net", "", "", ""); err != nil {
-		t.Fatalf("empty write: %v", err)
+	if putNames(t, db, "15550002003@s.whatsapp.net", "", "", "") {
+		t.Error("reported an empty write as stored")
 	}
 	var rows int
 	if err := db.QueryRow("SELECT COUNT(*) FROM contacts").Scan(&rows); err != nil {
@@ -133,201 +156,84 @@ func TestPutContactNamesRejectsNonNames(t *testing.T) {
 
 	// A numeric value must not erase a real name already present.
 	jid := "15550002004@s.whatsapp.net"
-	if err := putContactNames(ctx, db, jid, "Glen David Roth", "", ""); err != nil {
-		t.Fatalf("seeding: %v", err)
-	}
-	if err := putContactNames(ctx, db, jid, "15550002004", "", ""); err != nil {
-		t.Fatalf("numeric overwrite: %v", err)
-	}
+	putNames(t, db, jid, "Glen David Roth", "", "")
+	putNames(t, db, jid, "15550002004", "", "")
 	if full, _, _ := contactRow(t, db, jid); full != "Glen David Roth" {
 		t.Errorf("full_name = %q, want %q", full, "Glen David Roth")
 	}
 }
 
-// Contacts arrive in both namespaces; they must land under the same PN JID that
-// messages.sender uses, or the read layer's join finds nothing.
-func TestSyncContactsFromStoreCanonicalizesJIDs(t *testing.T) {
-	db := newContactTestDB(t)
-	lids := fakeLIDMapper{pnForLID: map[string]types.JID{
-		"200000000000001@lid": pnJID("15550003001"),
-	}}
-	store := fakeContactStore{contacts: map[types.JID]types.ContactInfo{
-		lidJID("200000000000001"):                     {FullName: "Benjamin Black"},
-		pnJID("15550003002"):                          {PushName: "Russ"},
-		{User: "15550003003", Server: legacyPNServer}: {FullName: "Sim Blaustein"},
-		pnJID("15550003004"):                          {FullName: "15550003004"}, // not a name
-	}}
-
-	synced, err := syncContactsFromStore(context.Background(), db, store, lids)
-	if err != nil {
-		t.Fatalf("syncing: %v", err)
-	}
-	if synced != 3 {
-		t.Errorf("synced = %d, want 3 (the fourth carries only digits)", synced)
-	}
-
-	for jid, want := range map[string]string{
-		"15550003001@s.whatsapp.net": "Benjamin Black", // LID mapped to PN
-		"15550003003@s.whatsapp.net": "Sim Blaustein",  // legacy @c.us normalized
-	} {
-		if full, _, _ := contactRow(t, db, jid); full != want {
-			t.Errorf("contacts[%s].full_name = %q, want %q", jid, full, want)
-		}
-	}
-	if _, push, _ := contactRow(t, db, "15550003002@s.whatsapp.net"); push != "Russ" {
-		t.Errorf("push_name = %q, want %q", push, "Russ")
-	}
-	if full, _, _ := contactRow(t, db, "15550003004@s.whatsapp.net"); full != "" {
-		t.Errorf("stored %q as a name, want the digits rejected", full)
+// whatsmeow's contact store keeps FirstName alongside FullName, and app-state
+// contact mutations fill them independently (PutContactName(jid, firstName,
+// fullName)). bestContactName never looks at FirstName, so a contact the client
+// knows by given name only is reported as having no name at all.
+func TestBestContactNameUsesFirstName(t *testing.T) {
+	contact := types.ContactInfo{Found: true, FirstName: "Kate"}
+	if got := bestContactName(contact); got != "Kate" {
+		t.Errorf("bestContactName(%+v) = %q, want %q", contact, got, "Kate")
 	}
 }
 
-func TestScrubNumericChatNames(t *testing.T) {
-	db := newContactTestDB(t)
-	seed := map[string]string{
-		"15550004001@s.whatsapp.net": "16175045529",     // phone number as name
-		"15550004002@s.whatsapp.net": "180947643277487", // LID as name
-		"0@s.whatsapp.net":           "0",
-		"15550004003@s.whatsapp.net": "Kate Sydney Cook", // keep
-		"120363158681642688@g.us":    "MIT Sloan LFM/MBA 2008",
-		"120363158681642689@g.us":    "Group 120363158681642689", // keep: readable
-	}
-	for jid, name := range seed {
-		if _, err := db.Exec("INSERT INTO chats (jid, name) VALUES (?, ?)", jid, name); err != nil {
-			t.Fatalf("seeding chats: %v", err)
-		}
-	}
-
-	scrubbed, err := scrubNumericChatNames(context.Background(), db)
+// The group-members endpoint writes a whole roster at once; the batch must
+// apply the same rules as a single write, and roll back as a unit.
+func TestStoreContactsBatch(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite3", "file:"+dir+"/m.db?_foreign_keys=on")
 	if err != nil {
-		t.Fatalf("scrubbing: %v", err)
+		t.Fatalf("opening db: %v", err)
 	}
-	if scrubbed != 3 {
-		t.Errorf("scrubbed = %d, want 3", scrubbed)
+	defer db.Close()
+	if _, err := db.Exec(contactsSchema); err != nil {
+		t.Fatalf("creating schema: %v", err)
 	}
-
-	rows, err := db.Query("SELECT jid, name FROM chats WHERE name IS NOT NULL ORDER BY jid")
-	if err != nil {
-		t.Fatalf("reading chats: %v", err)
-	}
-	defer rows.Close()
-	kept := map[string]string{}
-	for rows.Next() {
-		var jid, name string
-		if err := rows.Scan(&jid, &name); err != nil {
-			t.Fatalf("scanning: %v", err)
-		}
-		kept[jid] = name
-	}
-	if len(kept) != 3 {
-		t.Errorf("%d names survived, want 3: %v", len(kept), kept)
-	}
-	for _, jid := range []string{"15550004003@s.whatsapp.net", "120363158681642688@g.us", "120363158681642689@g.us"} {
-		if kept[jid] != seed[jid] {
-			t.Errorf("chats[%s].name = %q, want %q", jid, kept[jid], seed[jid])
-		}
-	}
-
-	// Second pass finds nothing left to do.
-	if again, err := scrubNumericChatNames(context.Background(), db); err != nil || again != 0 {
-		t.Errorf("second scrub = (%d, %v), want (0, nil)", again, err)
-	}
-}
-
-// A bridge restart must not disturb what the previous run established.
-func TestMigrateContactsIsIdempotent(t *testing.T) {
-	db := newContactTestDB(t)
-	ctx := context.Background()
-	lids := fakeLIDMapper{}
-	store := fakeContactStore{contacts: map[types.JID]types.ContactInfo{
-		pnJID("15550005001"): {FullName: "Glen David Roth", PushName: "Glen Roth"},
-	}}
-	if _, err := db.Exec(
-		"INSERT INTO chats (jid, name) VALUES (?, ?)", "15550005001@s.whatsapp.net", "15550005001",
-	); err != nil {
-		t.Fatalf("seeding chats: %v", err)
-	}
-
-	synced, scrubbed, err := migrateContacts(ctx, db, store, lids)
-	if err != nil {
-		t.Fatalf("first migration: %v", err)
-	}
-	if synced != 1 || scrubbed != 1 {
-		t.Fatalf("first migration = (%d synced, %d scrubbed), want (1, 1)", synced, scrubbed)
-	}
-
-	// A push name learned between restarts must survive the next sync.
-	if err := putContactNames(ctx, db, "15550005001@s.whatsapp.net", "", "glenr", ""); err != nil {
-		t.Fatalf("interim push name: %v", err)
-	}
-
-	synced, scrubbed, err = migrateContacts(ctx, db, store, lids)
-	if err != nil {
-		t.Fatalf("second migration: %v", err)
-	}
-	if scrubbed != 0 {
-		t.Errorf("second migration scrubbed %d rows, want 0", scrubbed)
-	}
-	full, push, _ := contactRow(t, db, "15550005001@s.whatsapp.net")
-	if full != "Glen David Roth" {
-		t.Errorf("full_name = %q, want %q", full, "Glen David Roth")
-	}
-	if push != "Glen Roth" {
-		t.Errorf("push_name = %q, want the contact store's %q to win on re-sync", push, "Glen Roth")
-	}
-	var chatName sql.NullString
-	if err := db.QueryRow(
-		"SELECT name FROM chats WHERE jid = ?", "15550005001@s.whatsapp.net",
-	).Scan(&chatName); err != nil {
-		t.Fatalf("reading chat: %v", err)
-	}
-	if chatName.Valid {
-		t.Errorf("chats.name = %q, want NULL", chatName.String)
-	}
-}
-
-// StoreChat must not erase a known name when a later message resolves to none,
-// and must not delete the messages that reference the chat.
-func TestStoreChatPreservesNameAndMessages(t *testing.T) {
-	db := newContactTestDB(t)
 	store := &MessageStore{db: db}
-	jid := "15550006001@s.whatsapp.net"
-	first := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
-	second := first.Add(time.Hour)
 
-	if err := store.StoreChat(jid, "Kate Sydney Cook", first); err != nil {
-		t.Fatalf("first StoreChat: %v", err)
+	if err := store.StoreContacts(nil); err != nil {
+		t.Errorf("empty batch: %v", err)
 	}
-	if _, err := db.Exec("INSERT INTO messages (id, chat_jid, content) VALUES (?, ?, ?)", "M1", jid, "hi"); err != nil {
-		t.Fatalf("inserting message: %v", err)
-	}
-
-	// A later message whose contact lookup came up empty.
-	if err := store.StoreChat(jid, "", second); err != nil {
-		t.Fatalf("second StoreChat: %v", err)
-	}
-	// ...and one that resolved only to a phone number.
-	if err := store.StoreChat(jid, "15550006001", second); err != nil {
-		t.Fatalf("third StoreChat: %v", err)
+	if err := store.StoreContacts([]ContactNames{
+		{JID: "15550006001@s.whatsapp.net", FullName: "Kate Sydney Cook"},
+		{JID: "15550006002@s.whatsapp.net", PushName: "glenr"},
+		// A phone number is not a name, in a batch as anywhere else.
+		{JID: "15550006003@s.whatsapp.net", FullName: "15550006003"},
+	}); err != nil {
+		t.Fatalf("StoreContacts: %v", err)
 	}
 
-	var name string
-	var last time.Time
-	if err := db.QueryRow("SELECT name, last_message_time FROM chats WHERE jid = ?", jid).Scan(&name, &last); err != nil {
-		t.Fatalf("reading chat: %v", err)
+	if full, _, _ := contactRow(t, db, "15550006001@s.whatsapp.net"); full != "Kate Sydney Cook" {
+		t.Errorf("full_name = %q, want %q", full, "Kate Sydney Cook")
 	}
-	if name != "Kate Sydney Cook" {
-		t.Errorf("name = %q, want it preserved", name)
+	if _, push, _ := contactRow(t, db, "15550006002@s.whatsapp.net"); push != "glenr" {
+		t.Errorf("push_name = %q, want %q", push, "glenr")
 	}
-	if !last.Equal(second) {
-		t.Errorf("last_message_time = %v, want it advanced to %v", last, second)
+	var rows int
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM contacts WHERE jid = ?", "15550006003@s.whatsapp.net",
+	).Scan(&rows); err != nil {
+		t.Fatalf("counting: %v", err)
 	}
+	if rows != 0 {
+		t.Errorf("stored %d rows for a numeric-only name, want 0", rows)
+	}
+}
 
-	var messages int
-	if err := db.QueryRow("SELECT COUNT(*) FROM messages WHERE chat_jid = ?", jid).Scan(&messages); err != nil {
-		t.Fatalf("counting messages: %v", err)
+// A blank is not a name; storing one shadows a real name from a weaker source
+// just as a phone number would.
+func TestBlankNamesAreNotNames(t *testing.T) {
+	if !isNumericName("   ") {
+		t.Error("isNumericName(whitespace) = false, want true")
 	}
-	if messages != 1 {
-		t.Errorf("%d messages survived the chat upsert, want 1", messages)
+	db := newContactTestDB(t)
+	jid := "15550008001@s.whatsapp.net"
+	if putNames(t, db, jid, "  ", "", "") {
+		t.Error("stored a whitespace-only full name")
+	}
+	putNames(t, db, jid, "", "Kate", "")
+	if _, push, _ := contactRow(t, db, jid); push != "Kate" {
+		t.Errorf("push_name = %q, want %q", push, "Kate")
+	}
+	putNames(t, db, jid, "  Kate Sydney Cook  ", "", "")
+	if full, _, _ := contactRow(t, db, jid); full != "Kate Sydney Cook" {
+		t.Errorf("full_name = %q, want it trimmed", full)
 	}
 }

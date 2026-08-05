@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"time"
 
 	"go.mau.fi/whatsmeow/types"
 )
@@ -162,5 +163,96 @@ func TestPairDisplayName(t *testing.T) {
 				t.Errorf("pairDisplayName(%q) = %q, want %q", tt.goos, got, tt.want)
 			}
 		})
+	}
+}
+
+// NewMessageStore's DDL is a concatenation of a literal and contactsSchema,
+// and nothing else in the suite executes it. Pin that it still creates every
+// table, and that the schema agrees with the statement that writes to it.
+func TestNewMessageStoreSchema(t *testing.T) {
+	t.Chdir(t.TempDir())
+	store, err := NewMessageStore()
+	if err != nil {
+		t.Fatalf("NewMessageStore: %v", err)
+	}
+	defer store.Close()
+
+	for _, table := range []string{"chats", "messages", "jid_aliases", "contacts"} {
+		var name string
+		if err := store.db.QueryRow(
+			"SELECT name FROM sqlite_master WHERE type='table' AND name=?", table,
+		).Scan(&name); err != nil {
+			t.Errorf("table %s missing: %v", table, err)
+		}
+	}
+	if _, err := store.db.Exec(upsertContact, "1@s.whatsapp.net", "A", "B", "C"); err != nil {
+		t.Errorf("upsert against the created schema: %v", err)
+	}
+}
+
+// StoreChat must not erase a known name when a later message resolves to none,
+// and must not delete the messages that reference the chat.
+func TestStoreChatPreservesNameAndMessages(t *testing.T) {
+	db := newContactTestDB(t)
+	store := &MessageStore{db: db}
+	jid := "15550006001@s.whatsapp.net"
+	first := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	second := first.Add(time.Hour)
+
+	if err := store.StoreChat(jid, "Kate Sydney Cook", first); err != nil {
+		t.Fatalf("first StoreChat: %v", err)
+	}
+	if _, err := db.Exec("INSERT INTO messages (id, chat_jid, content) VALUES (?, ?, ?)", "M1", jid, "hi"); err != nil {
+		t.Fatalf("inserting message: %v", err)
+	}
+
+	// A later message whose contact lookup came up empty.
+	if err := store.StoreChat(jid, "", second); err != nil {
+		t.Fatalf("second StoreChat: %v", err)
+	}
+	// ...and one that resolved only to a phone number.
+	if err := store.StoreChat(jid, "15550006001", second); err != nil {
+		t.Fatalf("third StoreChat: %v", err)
+	}
+
+	var name string
+	var last time.Time
+	if err := db.QueryRow("SELECT name, last_message_time FROM chats WHERE jid = ?", jid).Scan(&name, &last); err != nil {
+		t.Fatalf("reading chat: %v", err)
+	}
+	if name != "Kate Sydney Cook" {
+		t.Errorf("name = %q, want it preserved", name)
+	}
+	if !last.Equal(second) {
+		t.Errorf("last_message_time = %v, want it advanced to %v", last, second)
+	}
+
+	var messages int
+	if err := db.QueryRow("SELECT COUNT(*) FROM messages WHERE chat_jid = ?", jid).Scan(&messages); err != nil {
+		t.Fatalf("counting messages: %v", err)
+	}
+	if messages != 1 {
+		t.Errorf("%d messages survived the chat upsert, want 1", messages)
+	}
+}
+
+// The group exemption has to survive the write path, not just keepChatName:
+// StoreChat is what GetChatName's group branch hands "2026" to, and it is the
+// only place the name reaches the row.
+func TestStoreChatKeepsDigitOnlyGroupName(t *testing.T) {
+	db := newContactTestDB(t)
+	store := &MessageStore{db: db}
+	jid := "120363158681642690@g.us"
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+
+	if err := store.StoreChat(jid, "2026", now); err != nil {
+		t.Fatalf("StoreChat: %v", err)
+	}
+	var name sql.NullString
+	if err := db.QueryRow("SELECT name FROM chats WHERE jid = ?", jid).Scan(&name); err != nil {
+		t.Fatalf("reading chat: %v", err)
+	}
+	if name.String != "2026" {
+		t.Errorf("chats.name = (valid=%v, %q), want %q", name.Valid, name.String, "2026")
 	}
 }
