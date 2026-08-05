@@ -209,10 +209,15 @@ func syncContactsFromStore(ctx context.Context, ex execer, contacts contactListe
 	for jid := range all {
 		jids = append(jids, jid)
 	}
+	// Classify with the normalized server, the same way canonicalContactJID
+	// does: @c.us is the pre-multidevice spelling of the phone-number server,
+	// so a legacy address-book row is PN-keyed and must not be sorted into the
+	// bucket that loses to LID rows.
+	isPN := func(jid types.JID) bool {
+		return normalizeLegacyServer(jid.ToNonAD()).Server == types.DefaultUserServer
+	}
 	sort.Slice(jids, func(i, j int) bool {
-		iPN := jids[i].Server == types.DefaultUserServer
-		jPN := jids[j].Server == types.DefaultUserServer
-		if iPN != jPN {
+		if iPN, jPN := isPN(jids[i]), isPN(jids[j]); iPN != jPN {
 			return !iPN
 		}
 		return jids[i].String() < jids[j].String()

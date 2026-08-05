@@ -257,3 +257,48 @@ func TestGroupNamesAreExemptFromTheNumericRule(t *testing.T) {
 		t.Errorf("group name = %q, want %q — the scrub destroyed it", groupName.String, "2024")
 	}
 }
+
+// canonicalContactJID treats @c.us as the phone-number namespace, so the sort
+// that decides which colliding row wins must classify it the same way, or a
+// legacy address-book entry loses to a LID row.
+func TestSyncContactsFromStoreTreatsLegacyPNAsPN(t *testing.T) {
+	db := newContactTestDB(t)
+	lids := fakeLIDMapper{pnForLID: map[string]types.JID{
+		"200000000000077@lid": pnJID("15550003077"),
+	}}
+	store := fakeContactStore{contacts: map[types.JID]types.ContactInfo{
+		{User: "15550003077", Server: legacyPNServer}: {FullName: "Sim Blaustein"},
+		lidJID("200000000000077"):                     {FullName: "S"},
+	}}
+	if _, err := syncContactsFromStore(context.Background(), db, store, lids); err != nil {
+		t.Fatalf("syncing: %v", err)
+	}
+	if full, _, _ := contactRow(t, db, "15550003077@s.whatsapp.net"); full != "Sim Blaustein" {
+		t.Errorf("full_name = %q, want the address-book name %q to win", full, "Sim Blaustein")
+	}
+}
+
+// A channel or broadcast name is typed by a person just as a group name is,
+// and nothing backs those JIDs either.
+func TestMultiPartyChatNamesAreExempt(t *testing.T) {
+	for _, jid := range []string{
+		"120363158681642688@g.us", "123456789@newsletter", "987654321@broadcast",
+	} {
+		if got := keepChatName(jid, "2026"); got != "2026" {
+			t.Errorf("keepChatName(%s, \"2026\") = %q, want it kept", jid, got)
+		}
+	}
+	db := newContactTestDB(t)
+	for _, jid := range []string{"111@newsletter", "222@broadcast", "333@s.whatsapp.net"} {
+		if _, err := db.Exec("INSERT INTO chats (jid, name) VALUES (?, ?)", jid, "2026"); err != nil {
+			t.Fatalf("seeding %s: %v", jid, err)
+		}
+	}
+	scrubbed, err := scrubNumericChatNames(context.Background(), db)
+	if err != nil {
+		t.Fatalf("scrubbing: %v", err)
+	}
+	if scrubbed != 1 {
+		t.Errorf("scrubbed %d rows, want 1 (only the DM)", scrubbed)
+	}
+}
