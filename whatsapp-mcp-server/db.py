@@ -175,9 +175,12 @@ def resolve_sender_names(
             # Anchor on the user part and exclude groups: a bare substring
             # match would happily label a sender with a group's name, or with
             # another contact whose number merely contains these digits.
+            # The name test belongs in WHERE, not the projection: with it in
+            # the projection a digits-only row still satisfies LIMIT 1 and
+            # returns NULL, hiding a real name on a later row.
             cursor.execute(
-                f"SELECT {named('name')} FROM chats WHERE jid LIKE ? ESCAPE '\\' "
-                "AND jid NOT LIKE '%@g.us' AND name IS NOT NULL AND name != '' LIMIT 1",
+                "SELECT TRIM(name) FROM chats WHERE jid LIKE ? ESCAPE '\\' "
+                "AND jid NOT LIKE '%@g.us' AND TRIM(name) GLOB '*[^0-9]*' LIMIT 1",
                 (f"{escape_like(phone_part)}@%",),
             )
             row = cursor.fetchone()
