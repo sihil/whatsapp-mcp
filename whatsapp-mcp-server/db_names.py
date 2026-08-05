@@ -17,8 +17,12 @@ def named(column: str) -> str:
     clears the old ones at startup (see whatsapp-bridge/contacts.go), but a
     store whose bridge has not been restarted still has them, so the read path
     rejects them too.
+
+    Trimmed first, so a blank is not mistaken for a name: ' ' contains a
+    non-digit and would otherwise pass, shadowing a real name from a weaker
+    source exactly as a phone number does.
     """
-    return f"CASE WHEN {column} GLOB '*[^0-9]*' THEN {column} END"
+    return f"CASE WHEN TRIM({column}) GLOB '*[^0-9]*' THEN TRIM({column}) END"
 
 
 def contact_name_expr(prefix: str = "") -> str:
