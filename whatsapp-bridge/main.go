@@ -120,7 +120,7 @@ func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time
 		 ON CONFLICT(jid) DO UPDATE SET
 			name = CASE WHEN excluded.name != '' THEN excluded.name ELSE chats.name END,
 			last_message_time = excluded.last_message_time`,
-		jid, keepName(name), lastMessageTime,
+		jid, keepChatName(jid, name), lastMessageTime,
 	)
 	return err
 }
@@ -855,6 +855,7 @@ func getGroupMembers(client *whatsmeow.Client, messageStore *MessageStore, group
 
 	// Convert participants to our GroupMember struct
 	members := make([]GroupMember, 0, len(groupInfo.Participants))
+	learned := make([]ContactNames, 0, len(groupInfo.Participants))
 	for _, participant := range groupInfo.Participants {
 		member := GroupMember{
 			JID:          participant.JID.String(),
@@ -876,22 +877,19 @@ func getGroupMembers(client *whatsmeow.Client, messageStore *MessageStore, group
 		// Look up contact info for better display name
 		contact, err := client.Store.Contacts.GetContact(context.Background(), lookupJID)
 		if err == nil {
-			// Use fallback chain: FullName → PushName → BusinessName
-			if contact.FullName != "" {
-				member.DisplayName = contact.FullName
-			} else if contact.PushName != "" {
-				member.DisplayName = contact.PushName
-			} else if contact.BusinessName != "" {
-				member.DisplayName = contact.BusinessName
+			if name := bestContactName(contact); name != "" {
+				member.DisplayName = name
 			}
 			// lookupJID is already PN-canonical, matching messages.sender.
-			if err := messageStore.StoreContactNames(lookupJID.String(),
-				contact.FullName, contact.PushName, contact.BusinessName); err != nil {
-				fmt.Printf("Warning: failed to store contact names for %s: %v\n", lookupJID, err)
-			}
+			learned = append(learned, contactNamesOf(lookupJID.String(), contact))
 		}
 
 		members = append(members, member)
+	}
+
+	// One transaction for the whole roster, not one per participant.
+	if err := messageStore.StoreContacts(learned); err != nil {
+		fmt.Printf("Warning: failed to store contact names for group %s: %v\n", groupJID, err)
 	}
 
 	return true, "Successfully retrieved group members", groupInfo.Name, members
@@ -1293,8 +1291,10 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 	var existingName string
 	err := messageStore.db.QueryRow("SELECT name FROM chats WHERE jid = ?", chatJID).Scan(&existingName)
 	// A stored name that is nothing but digits came from this function's old
-	// phone-number fallback. Treat it as absent so the lookup runs again.
-	if err == nil && !isNumericName(existingName) {
+	// phone-number fallback. Treat it as absent so the lookup runs again — but
+	// only for a DM: a group name is user-set, so digits there are a real name.
+	isGroup := jid.Server == "g.us"
+	if err == nil && (isGroup && existingName != "" || !isNumericName(existingName)) {
 		// Chat exists with a name, use that
 		logger.Infof("Using existing chat name for %s: %s", chatJID, existingName)
 		return existingName
@@ -1303,7 +1303,7 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 	// Need to determine chat name
 	var name string
 
-	if jid.Server == "g.us" {
+	if isGroup {
 		// This is a group chat
 		logger.Infof("Getting name for group: %s", chatJID)
 
@@ -1360,14 +1360,11 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 		// chain. An empty name leaves the row's existing value untouched.
 		contact, err := client.Store.Contacts.GetContact(context.Background(), jid)
 		if err == nil {
-			for _, candidate := range []string{contact.FullName, contact.PushName, contact.BusinessName} {
-				if name = keepName(candidate); name != "" {
-					break
-				}
-			}
+			name = bestContactName(contact)
 			// Same names the read layer will want for this sender in groups.
+			names := contactNamesOf(chatJID, contact)
 			if storeErr := messageStore.StoreContactNames(
-				chatJID, contact.FullName, contact.PushName, contact.BusinessName,
+				names.JID, names.FullName, names.PushName, names.BusinessName,
 			); storeErr != nil {
 				logger.Warnf("Failed to store contact names for %s: %v", chatJID, storeErr)
 			}
