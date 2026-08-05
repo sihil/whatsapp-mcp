@@ -84,8 +84,10 @@ render as a playable voice message).
 - `config.py` — env var reads, logging setup.
 - `tools_read.py` / `tools_send.py` — the `@mcp.tool()` wrappers.
 - `models.py` — dataclasses for messages/chats/contacts.
-- `db.py`, `db_chats.py`, `db_contacts.py`, `db_messages.py` — SQLite read
-  layer. `db_contacts.py` holds the people-oriented lookups (finding a
+- `db.py`, `db_names.py`, `db_chats.py`, `db_contacts.py`, `db_messages.py` —
+  SQLite read layer. `db_names.py` owns every SQL fragment that turns stored
+  columns into a display name, so one rule about what counts as a name applies
+  to all queries. `db_contacts.py` holds the people-oriented lookups (finding a
   contact, the chats they appear in) and builds on `db_chats.chat_query`.
 - `api_client.py` — REST calls to the bridge (send/download/group members),
   rate limiting, media-path validation.
