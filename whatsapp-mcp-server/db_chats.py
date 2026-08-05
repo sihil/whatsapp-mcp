@@ -1,50 +1,31 @@
 """Chat queries against the bridge's message store. Contact-oriented lookups
 live in db_contacts.py, which builds on the query helpers here."""
-import sqlite3
 from typing import Any, Dict, List, Optional
 
 from db import (
     canonical_jid,
     chat_from_row,
     connect,
-    contact_name_expr,
-    contacts_available,
     escape_like,
     get_sender_name,
-    named,
     resolve_chat_jid,
 )
+from db_names import chat_name_expr, contacts_available, contacts_join
 from models import Message
 
 _LAST_MESSAGE_JOIN = (
     "LEFT JOIN messages m ON c.jid = m.chat_jid AND c.last_message_time = m.timestamp"
 )
-_CONTACT_JOIN = "LEFT JOIN contacts ct ON ct.jid = c.jid"
 
 
-def chat_name_expr(cursor: sqlite3.Cursor) -> str:
-    """SQL for a chat's display name: the name stored on the chat, else the
-    contact behind it. Callers filtering or ordering by name must use this
-    rather than `c.name`, or they miss every chat the bridge could not name."""
-    name = named("c.name")
-    if contacts_available(cursor):
-        return f"COALESCE({name}, {contact_name_expr('ct.')})"
-    return name
-
-
-def _chat_query(
-    cursor: sqlite3.Cursor,
+def chat_query(
+    with_contacts: bool,
     include_last_message: bool,
     where: str = "",
     suffix: str = "",
 ) -> str:
     """Build a chat query, optionally joined to the message at
-    `last_message_time`.
-
-    A direct chat's own JID is the contact's JID, so falling back to the
-    contacts table names conversations the bridge could not name at the time it
-    first saw them — including every chat whose stored name was a bare phone
-    number until the bridge cleared it.
+    `last_message_time`. Shared with db_contacts.py.
 
     Always groups by chat. The join matches on timestamp equality, and
     WhatsApp timestamps are second-granularity, so a chat whose last second
@@ -53,17 +34,16 @@ def _chat_query(
     another chat off the page entirely (and off every later page too, since
     OFFSET then counts the duplicates).
     """
-    with_contacts = contacts_available(cursor)
     last_message = (
         "m.content, m.sender, m.is_from_me" if include_last_message else "NULL, NULL, NULL"
     )
 
     parts = [
-        f"SELECT c.jid, {chat_name_expr(cursor)}, c.last_message_time, "
+        f"SELECT c.jid, {chat_name_expr(with_contacts)}, c.last_message_time, "
         f"{last_message} FROM chats c"
     ]
     if with_contacts:
-        parts.append(_CONTACT_JOIN)
+        parts.append(contacts_join(with_contacts))
     if include_last_message:
         parts.append(_LAST_MESSAGE_JOIN)
     if where:
@@ -108,7 +88,8 @@ def list_chats(
         where = ""
         params: List[Any] = []
 
-        name_expr = chat_name_expr(cursor)
+        with_contacts = contacts_available(cursor)
+        name_expr = chat_name_expr(with_contacts)
         if query:
             escaped_query = escape_like(query)
             where = (
@@ -121,8 +102,9 @@ def list_chats(
         params.extend([limit, page * limit])
 
         cursor.execute(
-            _chat_query(
-                cursor, include_last_message, where, f"ORDER BY {order_by} LIMIT ? OFFSET ?"
+            chat_query(
+                with_contacts, include_last_message, where,
+                f"ORDER BY {order_by} LIMIT ? OFFSET ?",
             ),
             tuple(params),
         )
@@ -138,7 +120,8 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]
         cursor = conn.cursor()
         resolved_jid = resolve_chat_jid(cursor, canonical_jid(chat_jid))
         cursor.execute(
-            _chat_query(cursor, include_last_message, "WHERE c.jid = ?"), (resolved_jid,)
+            chat_query(contacts_available(cursor), include_last_message, "WHERE c.jid = ?"),
+            (resolved_jid,),
         )
         row = cursor.fetchone()
         if not row:

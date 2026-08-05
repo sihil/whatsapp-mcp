@@ -5,7 +5,6 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from db import (
     DATE_EXPR,
-    MESSAGE_COLUMNS,
     alias_candidates,
     canonical_jid,
     connect,
@@ -15,19 +14,15 @@ from db import (
     parse_date_param,
     placeholders,
 )
+from db_names import contacts_available, message_source
 from models import Message, MessageContext
 
 logger = logging.getLogger(__name__)
 
-_MESSAGE_SOURCE = f"""
-    SELECT {MESSAGE_COLUMNS}
-    FROM messages
-    JOIN chats ON messages.chat_jid = chats.jid
-"""
-
 
 def _context_around(
     cursor: sqlite3.Cursor,
+    source: str,
     chat_jid: str,
     message_id: str,
     timestamp: str,
@@ -36,7 +31,9 @@ def _context_around(
     name_cache: Optional[Dict[str, Optional[str]]] = None,
 ) -> Tuple[List[Message], List[Message]]:
     """Messages immediately before and after `timestamp` in one chat, both
-    lists in chronological order. `name_cache` is shared across the calls made
+    lists in chronological order. `source` is the caller's `message_source`,
+    passed in so the sqlite_master probe behind it happens once per request
+    rather than once per match. `name_cache` is shared across the calls made
     for one listing so sender names resolve once, not once per match.
 
     Ordering is by (timestamp, id) rather than timestamp alone: WhatsApp
@@ -49,7 +46,7 @@ def _context_around(
     before_messages: List[Message] = []
     if before > 0:
         cursor.execute(f"""
-            {_MESSAGE_SOURCE}
+            {source}
             WHERE messages.chat_jid = ?
               AND (messages.timestamp, messages.id) < (?, ?)
             ORDER BY messages.timestamp DESC, messages.id DESC
@@ -61,7 +58,7 @@ def _context_around(
     after_messages: List[Message] = []
     if after > 0:
         cursor.execute(f"""
-            {_MESSAGE_SOURCE}
+            {source}
             WHERE messages.chat_jid = ?
               AND (messages.timestamp, messages.id) > (?, ?)
             ORDER BY messages.timestamp ASC, messages.id ASC
@@ -131,11 +128,12 @@ def list_messages(
     conn = connect()
     try:
         cursor = conn.cursor()
+        source = message_source(contacts_available(cursor))
         where_clauses, params = _build_message_filters(
             cursor, after, before, sender_phone_number, chat_jid, query
         )
 
-        query_parts = [_MESSAGE_SOURCE]
+        query_parts = [source]
         if where_clauses:
             query_parts.append("WHERE " + " AND ".join(where_clauses))
         query_parts.append("ORDER BY messages.timestamp DESC")
@@ -154,7 +152,7 @@ def list_messages(
         for row, message in zip(rows, messages):
             try:
                 context_before_msgs, context_after_msgs = _context_around(
-                    cursor, message.chat_jid, message.id, row[5],
+                    cursor, source, message.chat_jid, message.id, row[5],
                     context_before, context_after, name_cache
                 )
             except sqlite3.Error as e:
@@ -183,7 +181,8 @@ def get_message_context(
     conn = connect()
     try:
         cursor = conn.cursor()
-        query = f"{_MESSAGE_SOURCE} WHERE messages.id = ?"
+        source = message_source(contacts_available(cursor))
+        query = f"{source} WHERE messages.id = ?"
         params: List[Any] = [message_id]
         if chat_jid:
             query += " AND messages.chat_jid = ?"
@@ -197,7 +196,7 @@ def get_message_context(
         name_cache: Dict[str, Optional[str]] = {}
         target = messages_from_rows(cursor, [row], name_cache)[0]
         before_messages, after_messages = _context_around(
-            cursor, target.chat_jid, target.id, row[5], before, after, name_cache
+            cursor, source, target.chat_jid, target.id, row[5], before, after, name_cache
         )
         return MessageContext(
             message=target, before=before_messages, after=after_messages

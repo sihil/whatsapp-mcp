@@ -2,21 +2,18 @@
 from typing import Any, Dict, List
 
 from db import (
-    MESSAGE_COLUMNS,
     alias_candidates,
     canonical_jid,
-    connect,
-    contact_name_expr,
-    contacts_available,
-    escape_like,
-    named,
-    resolve_chat_jid,
     chat_from_row,
+    connect,
+    escape_like,
     message_from_row,
     placeholders,
+    resolve_chat_jid,
     resolve_sender_names,
 )
-from db_chats import _chat_query, format_message
+from db_chats import chat_query, format_message
+from db_names import chat_name_expr, contacts_available, contacts_join, message_source
 from models import Contact
 
 
@@ -33,26 +30,26 @@ def search_contacts(query: str, limit: int = 50) -> List[Dict[str, Any]]:
         # could not find them by name.
         with_contacts = contacts_available(cursor)
         sources = ["SELECT jid FROM chats WHERE jid NOT LIKE '%@g.us'"]
-        name_expr = named("ch.name")
-        contact_join = ""
         if with_contacts:
             sources.append("SELECT jid FROM contacts WHERE jid NOT LIKE '%@g.us'")
-            name_expr = f"COALESCE({name_expr}, {contact_name_expr('ct.')})"
-            contact_join = "LEFT JOIN contacts ct ON ct.jid = cand.jid"
 
-        # A nameless match sorts before every real name, so ordering by name
-        # alone lets bare-JID hits fill the whole limit and drop the named
-        # contacts the caller was actually looking for. Named ones first.
+        # The contacts join hangs off cand.jid, not ch.jid: a contact with no
+        # chat of their own has no chats row, so ch.jid is NULL for exactly the
+        # people this UNION exists to reach.
+        #
+        # NULL sorts before every real name, so ordering by name alone lets
+        # bare-JID hits fill the whole limit and drop the named contacts the
+        # caller was actually looking for. Named ones first.
         cursor.execute(f"""
             SELECT jid, name FROM (
-                SELECT cand.jid AS jid, {name_expr} AS name
+                SELECT cand.jid AS jid, {chat_name_expr(with_contacts, "ch")} AS name
                 FROM ({" UNION ".join(sources)}) cand
                 LEFT JOIN chats ch ON ch.jid = cand.jid
-                {contact_join}
+                {contacts_join(with_contacts, "cand")}
             )
             WHERE LOWER(name) LIKE LOWER(?) ESCAPE '\\'
                OR LOWER(jid) LIKE LOWER(?) ESCAPE '\\'
-            ORDER BY (name IS NULL OR name = ''), name, jid
+            ORDER BY (name IS NULL), name, jid
             LIMIT ?
         """, (search_pattern, search_pattern, limit))
 
@@ -78,8 +75,8 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Dict[str
         candidates = alias_candidates(cursor, canonical_jid(jid))
         slots = placeholders(candidates)
         cursor.execute(
-            _chat_query(
-                cursor,
+            chat_query(
+                contacts_available(cursor),
                 True,
                 f"WHERE c.jid IN ({slots}) "
                 f"OR c.jid IN (SELECT chat_jid FROM messages WHERE sender IN ({slots}))",
@@ -101,9 +98,7 @@ def get_last_interaction(jid: str) -> str:
         candidates = alias_candidates(cursor, canonical_jid(jid))
         slots = placeholders(candidates)
         cursor.execute(f"""
-            SELECT {MESSAGE_COLUMNS}
-            FROM messages
-            JOIN chats ON messages.chat_jid = chats.jid
+            {message_source(contacts_available(cursor))}
             WHERE messages.sender IN ({slots}) OR chats.jid IN ({slots})
             ORDER BY messages.timestamp DESC
             LIMIT 1
@@ -135,11 +130,12 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
     conn = connect()
     try:
         cursor = conn.cursor()
+        with_contacts = contacts_available(cursor)
         canonical = f"{digits}@s.whatsapp.net"
         candidates = alias_candidates(cursor, canonical)
         cursor.execute(
-            _chat_query(
-                cursor,
+            chat_query(
+                with_contacts,
                 True,
                 f"WHERE c.jid IN ({placeholders(candidates)}) AND c.jid NOT LIKE '%@g.us'",
             ),
@@ -149,8 +145,8 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
 
         if not rows:
             cursor.execute(
-                _chat_query(
-                    cursor,
+                chat_query(
+                    with_contacts,
                     True,
                     "WHERE c.jid NOT LIKE '%@g.us' "
                     "AND substr(c.jid, 1, instr(c.jid, '@') - 1) LIKE ? ESCAPE '\\'",
@@ -169,7 +165,9 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
                 # bridge has since merged); follow it to the surviving row.
                 merged_jid = resolve_chat_jid(cursor, matched_jids[0])
                 if merged_jid != matched_jids[0]:
-                    cursor.execute(_chat_query(cursor, True, "WHERE c.jid = ?"), (merged_jid,))
+                    cursor.execute(
+                        chat_query(with_contacts, True, "WHERE c.jid = ?"), (merged_jid,)
+                    )
                     merged_rows = cursor.fetchall()
                     if merged_rows:
                         rows = merged_rows

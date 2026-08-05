@@ -7,48 +7,13 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 from urllib.parse import quote
 
 from config import messages_db_path
+from db_names import contact_name_expr, contacts_available, named
 from models import Chat, Message
-
-MESSAGE_COLUMNS = (
-    "messages.id, messages.chat_jid, chats.name, messages.sender, "
-    "messages.content, messages.timestamp, messages.is_from_me, messages.media_type"
-)
 
 # Stored timestamps carry the offset Go wrote them with, so they can only be
 # compared against a caller-supplied instant once both sides are resolved to
 # UTC. SQLite's datetime() does that for any offset-bearing ISO-8601 string.
 DATE_EXPR = "datetime(messages.timestamp)"
-
-
-def named(column: str) -> str:
-    """SQL yielding `column` only when it holds an actual name.
-
-    A value of nothing but digits is the phone number some lookup fell back to,
-    not a name, and it is worse than NULL: it looks like a successful lookup and
-    stops the caller's fallback chain. The bridge no longer writes them and
-    clears the old ones at startup, but a store whose bridge has not been
-    restarted still has them, so the read path rejects them too.
-    """
-    return f"CASE WHEN {column} GLOB '*[^0-9]*' THEN {column} END"
-
-
-def contact_name_expr(prefix: str = "") -> str:
-    """SQL for a contact's display name, best source first. The bridge fills
-    these from the address book, from the push name riding on every incoming
-    message, and from group participant lookups. `prefix` qualifies the columns
-    when the contacts table is joined under an alias."""
-    return (
-        f"COALESCE({named(prefix + 'full_name')}, "
-        f"{named(prefix + 'push_name')}, {named(prefix + 'business_name')})"
-    )
-
-
-def contacts_available(cursor: sqlite3.Cursor) -> bool:
-    """Whether the bridge that wrote this store maintains a contacts table.
-    Stores written before it existed keep working, without sender names, until
-    the bridge is restarted."""
-    cursor.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'contacts'")
-    return cursor.fetchone() is not None
 
 
 def connect() -> sqlite3.Connection:
@@ -229,7 +194,7 @@ def get_sender_name(sender_jid: str, cursor: Optional[sqlite3.Cursor] = None) ->
 
 
 def message_from_row(row: Sequence[Any], sender_names: Optional[Dict[str, str]] = None) -> Message:
-    """Build a Message from a row selected with MESSAGE_COLUMNS."""
+    """Build a Message from a row selected with `message_source`."""
     sender = row[3]
     is_from_me = bool(row[6])
     if is_from_me:
