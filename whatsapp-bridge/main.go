@@ -93,14 +93,7 @@ func NewMessageStore() (*MessageStore, error) {
 			old_jid TEXT PRIMARY KEY,
 			new_jid TEXT NOT NULL
 		);
-
-		CREATE TABLE IF NOT EXISTS contacts (
-			jid           TEXT PRIMARY KEY,
-			full_name     TEXT NOT NULL DEFAULT '',
-			push_name     TEXT NOT NULL DEFAULT '',
-			business_name TEXT NOT NULL DEFAULT ''
-		);
-	`)
+	` + contactsSchema + ";")
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to create tables: %v", err)
