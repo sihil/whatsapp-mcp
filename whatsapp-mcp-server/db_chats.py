@@ -56,8 +56,13 @@ def chat_query(
 
 def format_message(message: Message, show_chat_info: bool = True, cursor=None) -> str:
     """Render a single message as a human-readable line."""
-    if show_chat_info and message.chat_name:
-        output = f"[{message.timestamp:%Y-%m-%d %H:%M:%S}] Chat: {message.chat_name} "
+    if show_chat_info:
+        # A chat the bridge could not name still needs identifying, and for a
+        # non-media message this line is the only place it could appear.
+        output = (
+            f"[{message.timestamp:%Y-%m-%d %H:%M:%S}] "
+            f"Chat: {message.chat_name or message.chat_jid} "
+        )
     else:
         output = f"[{message.timestamp:%Y-%m-%d %H:%M:%S}] "
 
