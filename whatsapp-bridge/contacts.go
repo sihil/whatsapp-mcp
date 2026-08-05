@@ -80,11 +80,25 @@ func keepName(name string) string {
 	return strings.TrimSpace(name)
 }
 
-// keepChatName applies the same rule to a chat's name, exempting groups: a
-// group name is chosen by a person and has no contact behind it to fall back
-// to, so digits there are a real name rather than a failed lookup.
+// isMultiPartyChat reports whether a chat JID names a conversation rather than
+// a person. Mirrors the multi-party predicate in identity.go.
+func isMultiPartyChat(jid string) bool {
+	for _, server := range []string{
+		types.GroupServer, types.BroadcastServer, types.NewsletterServer,
+	} {
+		if strings.HasSuffix(jid, "@"+server) {
+			return true
+		}
+	}
+	return false
+}
+
+// keepChatName applies the same rule to a chat's name, exempting conversations
+// that are not a person: a group or channel name is chosen by someone and has
+// no contact behind the JID to fall back to, so digits there are a real name
+// rather than a failed lookup.
 func keepChatName(jid, name string) string {
-	if strings.HasSuffix(jid, "@"+types.GroupServer) {
+	if isMultiPartyChat(jid) {
 		return strings.TrimSpace(name)
 	}
 	return keepName(name)
@@ -244,14 +258,17 @@ func syncContactsFromStore(ctx context.Context, ex execer, contacts contactListe
 // layer cannot tell them from a real one, so it stops its fallback chain on
 // them. NULL lets the read layer fall through to contacts instead.
 //
-// Groups are exempt. A group name is chosen by a person and there is no contact
-// behind a @g.us JID to fall back to, so digits there are a real name — "2024"
-// is a plausible group name, and clearing it would destroy the only copy.
+// Multi-party chats are exempt (see isMultiPartyChat). A group or channel name
+// is chosen by a person and there is no contact behind the JID to fall back to,
+// so digits there are a real name — "2024" is a plausible group name, and
+// clearing it would destroy the only copy.
 func scrubNumericChatNames(ctx context.Context, ex execer) (int, error) {
 	res, err := ex.ExecContext(ctx, `
 		UPDATE chats SET name = NULL
-		WHERE name IS NOT NULL AND jid NOT LIKE '%@g.us'
-		  AND TRIM(name) NOT GLOB '*[^0-9]*'`)
+		WHERE name IS NOT NULL AND TRIM(name) NOT GLOB '*[^0-9]*'
+		  AND jid NOT LIKE '%@g.us'
+		  AND jid NOT LIKE '%@broadcast'
+		  AND jid NOT LIKE '%@newsletter'`)
 	if err != nil {
 		return 0, err
 	}

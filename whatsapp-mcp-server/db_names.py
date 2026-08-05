@@ -63,11 +63,15 @@ def chat_name_expr(with_contacts: bool, chat: str = "c", contact: str = "ct") ->
     bridge cleared it. Select, filter and order by this rather than a raw
     `name` column; pair it with `contacts_join`.
 
-    Groups are exempt from the digits rule: a group name is set by a person and
-    has no contact behind it to fall back to, so "2024" is a real group name.
+    Multi-party chats are exempt from the digits rule: a group or channel name
+    is set by a person and has no contact behind the JID to fall back to, so
+    "2024" is a real name there. Matches isMultiPartyChat in the bridge.
     """
+    multi_party = " OR ".join(
+        f"{chat}.jid LIKE '%@{server}'" for server in ("g.us", "broadcast", "newsletter")
+    )
     name = (
-        f"CASE WHEN {chat}.jid LIKE '%@g.us' THEN NULLIF(TRIM({chat}.name), '') "
+        f"CASE WHEN {multi_party} THEN NULLIF(TRIM({chat}.name), '') "
         f"ELSE {named(chat + '.name')} END"
     )
     if not with_contacts:

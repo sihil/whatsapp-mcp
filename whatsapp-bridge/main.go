@@ -1292,9 +1292,11 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 	err := messageStore.db.QueryRow("SELECT name FROM chats WHERE jid = ?", chatJID).Scan(&existingName)
 	// A stored name that is nothing but digits came from this function's old
 	// phone-number fallback. Treat it as absent so the lookup runs again — but
-	// only for a DM: a group name is user-set, so digits there are a real name.
-	isGroup := jid.Server == "g.us"
-	if err == nil && (isGroup && existingName != "" || !isNumericName(existingName)) {
+	// only for a DM: a group or channel name is user-set, so digits there are a
+	// real name.
+	isGroup := jid.Server == types.GroupServer
+	if err == nil && (isMultiPartyChat(chatJID) && existingName != "" ||
+		!isNumericName(existingName)) {
 		// Chat exists with a name, use that
 		logger.Infof("Using existing chat name for %s: %s", chatJID, existingName)
 		return existingName
