@@ -15,14 +15,7 @@ Two cooperating processes; both must be running for the system to work:
    - `POST /api/download` — download media from a message to disk
    - `POST /api/group/members` — list group members (with contact-name lookup)
 
-2. **`whatsapp-mcp-server/`** — Python MCP server (FastMCP, stdio transport), split into small modules (each ≤300 lines, see `whatsapp-mcp-server/README.md` for the full breakdown):
-   - `main.py` / `server.py` — entrypoint and the shared `FastMCP` instance
-   - `config.py` — env var reads (DB path, bridge URL, media allowlist, rate limit, log level) and logging setup
-   - `tools_read.py` / `tools_send.py` — the `@mcp.tool()` wrappers, one per tool
-   - `models.py`, `db.py`/`db_names.py`/`db_chats.py`/`db_contacts.py`/`db_messages.py` — dataclasses and the SQLite read layer (`db_names.py` owns the display-name SQL every query builds on)
-   - `api_client.py` — REST calls to the bridge, send rate limiting, media-path validation
-   - `whatsapp.py` — thin façade re-exporting the public functions for backward-compatible imports
-   - `audio.py` — FFmpeg conversion of audio to `.ogg` Opus for voice messages
+2. **`whatsapp-mcp-server/`** — Python MCP server (FastMCP, stdio transport), split into small modules (each ≤300 lines, see `whatsapp-mcp-server/README.md` for the full breakdown).
 
 **Data flow is split by operation type:**
 - **Reads** (list/search messages, chats, contacts): Python queries the bridge's SQLite DB **directly** at `whatsapp-bridge/store/messages.db` (path computed relative to `config.py`; override with `WHATSAPP_MCP_DB_PATH`). The Go bridge is not involved.
@@ -49,12 +42,6 @@ Other env vars (all read in `config.py`): `WHATSAPP_MCP_ALLOWED_MEDIA_DIRS` (all
 cd whatsapp-bridge && go run .
 
 cd whatsapp-bridge && go run . -pair-phone 15551234567  # pair by 8-char code instead of QR
-
-# Run the bridge tests
-cd whatsapp-bridge && go test ./...
-
-# Build the bridge binary (gitignored)
-cd whatsapp-bridge && go build
 
 # Run the MCP server standalone (normally launched by Claude Desktop/Cursor via stdio)
 cd whatsapp-mcp-server && uv run main.py
