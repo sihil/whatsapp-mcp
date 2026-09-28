@@ -23,14 +23,12 @@ import (
 	"go.mau.fi/whatsmeow/types"
 )
 
-// contactLister is the subset of whatsmeow's contact store used to seed the
-// contacts table.
+// contactLister is the part of whatsmeow's contact store that seeds contacts.
 type contactLister interface {
 	GetAllContacts(ctx context.Context) (map[types.JID]types.ContactInfo, error)
 }
 
-// execer covers both *sql.DB and *sql.Tx so the writes below can join a
-// migration transaction or stand alone.
+// execer covers *sql.DB and *sql.Tx, so writes can join a migration or stand alone.
 type execer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
@@ -206,10 +204,12 @@ func (store *MessageStore) StoreContacts(contacts []ContactNames) error {
 	return tx.Commit()
 }
 
-// syncContactsFromStore copies whatsmeow's contact store into contacts.
-// Idempotent: re-running picks up names the client has learned since, and
-// re-writing an unchanged name is a no-op.
+// syncContactsFromStore copies whatsmeow's contact store into contacts. Idempotent;
+// a no-op on an unpaired device, whose stores whatsmeow leaves nil until pairing.
 func syncContactsFromStore(ctx context.Context, ex execer, contacts contactLister, lids lidMapper) (int, error) {
+	if contacts == nil {
+		return 0, nil
+	}
 	all, err := contacts.GetAllContacts(ctx)
 	if err != nil {
 		return 0, err
