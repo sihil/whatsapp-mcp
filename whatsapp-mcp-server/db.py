@@ -220,8 +220,8 @@ def message_from_row(row: Sequence[Any], sender_names: Optional[Dict[str, str]] 
         is_from_me=is_from_me,
         media_type=row[7],
         sender_name=sender_name,
-        edited=len(row) > 8 and bool(row[8]),
-        deleted=len(row) > 9 and bool(row[9]),
+        edited=bool(row[8]),
+        deleted=bool(row[9]),
     )
 
 

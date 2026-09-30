@@ -14,7 +14,7 @@ from db import (
 )
 from db_chats import chat_query, format_message
 from db_names import (
-    chat_name_expr, contacts_available, contacts_join, message_source, status_available,
+    chat_name_expr, contacts_available, contacts_join, message_source,
 )
 from models import Contact
 
@@ -112,7 +112,7 @@ def get_last_interaction(jid: str) -> str:
         candidates = alias_candidates(cursor, canonical_jid(jid))
         slots = placeholders(candidates)
         cursor.execute(f"""
-            {message_source(contacts_available(cursor), status_available(cursor))}
+            {message_source(cursor)}
             WHERE messages.sender IN ({slots}) OR chats.jid IN ({slots})
             ORDER BY messages.timestamp DESC
             LIMIT 1

@@ -82,22 +82,23 @@ def chat_name_expr(with_contacts: bool, chat: str = "c", contact: str = "ct") ->
 def status_available(cursor: sqlite3.Cursor) -> bool:
     """Whether the bridge that wrote this store has the edited_at/deleted_at
     columns on messages. Older stores lack them until the bridge restarts and
-    migrates; messages then read as neither edited nor deleted. Probe once per
-    request, like `contacts_available`."""
+    migrates; messages then read as neither edited nor deleted."""
     cursor.execute("SELECT name FROM pragma_table_info('messages')")
     columns = {row[0] for row in cursor.fetchall()}
     return {"edited_at", "deleted_at"} <= columns
 
 
-def message_source(with_contacts: bool, with_status: bool = False) -> str:
+def message_source(cursor: sqlite3.Cursor) -> str:
     """SELECT ... FROM for message rows, in the column order `message_from_row`
     expects (new columns are appended, never inserted). The chat name goes
     through `chat_name_expr`, so a message reports the same chat name
-    `list_chats` would. Without `with_status` the edited/deleted columns are
-    constant 0."""
+    `list_chats` would. Probes the store for the contacts table and the
+    status columns, so build it once per request; on a store without the
+    status columns edited/deleted are constant 0."""
+    with_contacts = contacts_available(cursor)
     status = (
         "messages.edited_at IS NOT NULL, messages.deleted_at IS NOT NULL"
-        if with_status else "0, 0"
+        if status_available(cursor) else "0, 0"
     )
     return f"""
         SELECT messages.id, messages.chat_jid,

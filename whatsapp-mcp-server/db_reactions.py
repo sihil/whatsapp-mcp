@@ -10,9 +10,9 @@ from models import Message
 _CHUNK = 500
 
 
-def reactions_available(cursor: sqlite3.Cursor) -> bool:
+def _reactions_available(cursor: sqlite3.Cursor) -> bool:
     """Whether the bridge that wrote this store maintains a reactions table.
-    Older stores read as having no reactions. Probe once per request."""
+    Older stores read as having no reactions."""
     cursor.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'reactions'")
     return cursor.fetchone() is not None
 
@@ -33,9 +33,12 @@ def attach_reactions(
     name_cache: Optional[Dict[str, Optional[str]]] = None,
 ) -> None:
     """Fill `Message.reactions` for every message in one pass (chunked only
-    past _CHUNK ids). Pass all the messages of a request together, context
-    windows included, and only when `reactions_available`. A message that
-    appears twice (as a match and as another's context) shares one list."""
+    past _CHUNK ids). Call once per request with all its messages together,
+    context windows included. A message that appears twice (as a match and as
+    another's context) shares one list. A store without a reactions table
+    leaves every list empty."""
+    if not _reactions_available(cursor):
+        return
     by_key: Dict[Tuple[str, str], List[Message]] = {}
     for message in messages:
         by_key.setdefault((message.id, message.chat_jid), []).append(message)
@@ -57,7 +60,9 @@ def attach_reactions(
     if not found:
         return
 
-    own = _own_jid(cursor)
+    own = next(
+        (m.sender for group in by_key.values() for m in group if m.is_from_me), None
+    ) or _own_jid(cursor)
     senders = [s for pairs in found.values() for s, _ in pairs if s != own]
     names = resolve_sender_names(cursor, senders, name_cache)
     for key, pairs in found.items():

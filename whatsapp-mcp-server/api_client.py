@@ -33,7 +33,7 @@ _send_lock = threading.Lock()
 def _reserve_send_slot() -> Optional[float]:
     """Claim a slot in the sliding send window, raising if this call would
     exceed WHATSAPP_MCP_SEND_RATE_LIMIT sends in the trailing 60 seconds.
-    Shared by the three send tools; `<= 0` disables the limit.
+    Shared by every outbound tool (see `post_limited`); `<= 0` disables the limit.
 
     Returns the recorded timestamp so a send that never reached the bridge can
     hand the slot back via `_release_send_slot`, or None when disabled."""
@@ -120,22 +120,29 @@ def _post(
         return None, f"Error: HTTP {response.status_code} - {response.text}"
 
 
+def post_limited(
+    endpoint: str, payload: Dict[str, str], timeout: Tuple[float, float]
+) -> Tuple[bool, str]:
+    """Claim a rate-limit slot, POST to a bridge endpoint, and parse the
+    {success, message} result."""
+    reserved = _reserve_send_slot()
+    body, error = _post(endpoint, payload, timeout=timeout)
+    if body is None:
+        # The request never reached the bridge, so it should not count
+        # against the window.
+        _release_send_slot(reserved)
+        return False, error
+    return body.get("success", False), body.get("message", "Unknown response")
+
+
 def _post_send(payload: Dict[str, str]) -> Tuple[bool, str]:
-    """Claim a rate-limit slot, POST to the bridge's /send endpoint, and parse
-    the result.
+    """Rate-limited POST to the bridge's /send endpoint.
 
     The read timeout is generous because it covers the bridge's whole upload
     to WhatsApp: timing out early would report a send as failed while it is
     still in flight, and the caller's retry would deliver it twice.
     """
-    reserved = _reserve_send_slot()
-    body, error = _post("/send", payload, timeout=(5, _SEND_READ_TIMEOUT))
-    if body is None:
-        # The send never reached the bridge, so it should not count against
-        # the window.
-        _release_send_slot(reserved)
-        return False, error
-    return body.get("success", False), body.get("message", "Unknown response")
+    return post_limited("/send", payload, (5, _SEND_READ_TIMEOUT))
 
 
 def send_message(recipient: str, message: str, reply_to: Optional[str] = None) -> Tuple[bool, str]:
