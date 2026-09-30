@@ -181,20 +181,21 @@ func applyMutation(store *MessageStore, mu mutation, chatJID, sender string, isA
 	}
 }
 
-// applyHistoryMutations handles the reactions and revoke stub carried by a
-// history-sync message. It reports true when the message is a REVOKE stub, which
-// has no content and must not be stored; other messages continue on to be
-// stored normally after their reactions are recorded.
-func applyHistoryMutations(ctx context.Context, lids lidMapper, store *MessageStore, wmi *waWeb.WebMessageInfo,
-	chat, ownJID types.JID, pnMap map[string]types.JID, logger waLog.Logger) bool {
+// applyHistoryReactions records the reactions carried by a history-sync
+// message. Call it after the message itself is stored: SetReaction ignores a
+// reaction whose target has no row, so a message the bridge does not keep
+// (poll, sticker, ...) leaves no orphan reactions behind.
+func applyHistoryReactions(ctx context.Context, lids lidMapper, store *MessageStore, wmi *waWeb.WebMessageInfo,
+	chat, ownJID types.JID, pnMap map[string]types.JID, logger waLog.Logger) {
 	id := wmi.GetKey().GetID()
 	if id == "" {
-		return false
+		return
 	}
 	chatJID := chat.String()
+	msgTime := time.Unix(int64(wmi.GetMessageTimestamp()), 0)
 	for _, r := range wmi.GetReactions() {
 		reactor := canonicalHistorySenderJID(ctx, lids, r.GetKey().GetParticipant(), r.GetKey().GetFromMe(), chat, ownJID, pnMap)
-		at := time.Unix(int64(wmi.GetMessageTimestamp()), 0)
+		at := msgTime
 		if ms := r.GetSenderTimestampMS(); ms != 0 {
 			at = time.UnixMilli(ms)
 		}
@@ -202,16 +203,28 @@ func applyHistoryMutations(ctx context.Context, lids lidMapper, store *MessageSt
 			logger.Warnf("Failed to store history reaction on %s: %v", id, err)
 		}
 	}
-	if wmi.GetMessageStubType() != waWeb.WebMessageInfo_REVOKE {
+}
+
+// applyHistoryRevoke reports whether a history-sync message is a REVOKE stub —
+// a deleted message, which has no content and must not be stored — and
+// tombstones the row it refers to.
+func applyHistoryRevoke(ctx context.Context, lids lidMapper, store *MessageStore, wmi *waWeb.WebMessageInfo,
+	chat, ownJID types.JID, pnMap map[string]types.JID, logger waLog.Logger) bool {
+	id := wmi.GetKey().GetID()
+	if id == "" || wmi.GetMessageStubType() != waWeb.WebMessageInfo_REVOKE {
 		return false
 	}
+	chatJID := chat.String()
 	participant := wmi.GetKey().GetParticipant()
 	if participant == "" {
 		participant = wmi.GetParticipant()
 	}
-	sender := canonicalHistorySenderJID(ctx, lids, participant, wmi.GetKey().GetFromMe(), chat, ownJID, pnMap)
-	at := time.Unix(int64(wmi.GetMessageTimestamp()), 0)
-	if _, err := store.ApplyRevoke(chatJID, id, sender, nil, at); err != nil {
+	fromMe := wmi.GetKey().GetFromMe()
+	sender := canonicalHistorySenderJID(ctx, lids, participant, fromMe, chat, ownJID, pnMap)
+	if raw, err := types.ParseJID(participant); err == nil && !fromMe {
+		adoptSender(ctx, lids, store, chatJID, id, sender, logger, raw)
+	}
+	if _, err := store.ApplyRevoke(chatJID, id, sender, nil, time.Unix(int64(wmi.GetMessageTimestamp()), 0)); err != nil {
 		logger.Warnf("Failed to apply history revoke of %s: %v", id, err)
 	}
 	return true

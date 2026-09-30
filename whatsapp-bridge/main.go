@@ -1511,9 +1511,9 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 				// Log the message content for debugging
 				logger.Infof("Message content: %v, Media Type: %v", content, mediaType)
 
-				// Reactions ride on the message; a REVOKE stub is a deleted
-				// message and has nothing to store (see mutation_events.go).
-				if applyHistoryMutations(context.Background(), client.Store.LIDs, messageStore, msg.Message, jid, ownJID, pnMap, logger) {
+				// A REVOKE stub is a deleted message and has nothing to store
+				// (see mutation_events.go).
+				if applyHistoryRevoke(context.Background(), client.Store.LIDs, messageStore, msg.Message, jid, ownJID, pnMap, logger) {
 					continue
 				}
 
@@ -1571,6 +1571,8 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 				if err != nil {
 					logger.Warnf("Failed to store history message: %v", err)
 				} else {
+					// Reactions ride on the message and need its row to attach to.
+					applyHistoryReactions(context.Background(), client.Store.LIDs, messageStore, msg.Message, jid, ownJID, pnMap, logger)
 					syncedCount++
 					// Log successful message storage
 					if mediaType != "" {

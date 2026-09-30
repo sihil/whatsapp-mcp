@@ -33,17 +33,34 @@ func TestApplyHistoryMutations(t *testing.T) {
 	own, _ := types.ParseJID(tMe)
 	lids := fakeLIDMapper{pnForLID: map[string]types.JID{"200000000000001@lid": pnJID("15550001002")}}
 	apply := func(wmi *waWeb.WebMessageInfo) bool {
-		return applyHistoryMutations(ctx, lids, s, wmi, chat, own, nil, waLog.Noop)
+		if applyHistoryRevoke(ctx, lids, s, wmi, chat, own, nil, waLog.Noop) {
+			return true
+		}
+		applyHistoryReactions(ctx, lids, s, wmi, chat, own, nil, waLog.Noop)
+		return false
+	}
+
+	reactions := []*waWeb.Reaction{
+		{Key: &waCommon.MessageKey{FromMe: proto.Bool(true)}, Text: proto.String("👍")},
+		{Key: &waCommon.MessageKey{Participant: proto.String("200000000000001@lid")}, Text: proto.String("🎉")},
+	}
+	// A message the bridge does not keep (poll, sticker, ...) has no row, and
+	// its reactions must not be stored either.
+	unkept := &waWeb.WebMessageInfo{
+		Key:              &waCommon.MessageKey{ID: proto.String("POLL"), Participant: proto.String(tPeer)},
+		MessageTimestamp: proto.Uint64(uint64(t0.Unix())),
+		Reactions:        reactions,
+	}
+	apply(unkept)
+	if n := countReactions(t, s, "POLL", tChatGrp); n != 0 {
+		t.Errorf("%d reactions stored for a message with no row", n)
 	}
 
 	putMsg(t, s, "H1", tChatGrp, tPeer, "hello", "", false)
 	reacted := &waWeb.WebMessageInfo{
 		Key:              &waCommon.MessageKey{ID: proto.String("H1"), Participant: proto.String(tPeer)},
 		MessageTimestamp: proto.Uint64(uint64(t0.Unix())),
-		Reactions: []*waWeb.Reaction{
-			{Key: &waCommon.MessageKey{FromMe: proto.Bool(true)}, Text: proto.String("👍")},
-			{Key: &waCommon.MessageKey{Participant: proto.String("200000000000001@lid")}, Text: proto.String("🎉")},
-		},
+		Reactions:        reactions,
 	}
 	if apply(reacted) {
 		t.Error("a message with reactions must still be stored as a message")
@@ -134,6 +151,29 @@ func TestOwnMutationAppliesToLegacySender(t *testing.T) {
 	}
 	if applied, err := s.ApplyRevoke(tChatDM, "L1", m.Sender, nil, t0); err != nil || !applied {
 		t.Errorf("revoke keyed on stored sender not applied: %v %v", applied, err)
+	}
+}
+
+// History sync can hand over a snapshot older than what already arrived live;
+// it must neither roll a reaction back nor revive a removed one.
+func TestStaleReactionIgnored(t *testing.T) {
+	s := newMutationStore(t)
+	putMsg(t, s, "M1", tChatDM, tPeer, "hi", "", false)
+	// Mixed offsets, as the store holds them: 13:00+01:00 is 12:00Z, before 12:30Z.
+	cet := time.FixedZone("CET", 3600)
+	must(t, s.SetReaction("M1", tChatDM, tPeer, "❤️", t0.Add(30*time.Minute)))
+	must(t, s.SetReaction("M1", tChatDM, tPeer, "👍", t0.In(cet)))
+	if got := reactionEmoji(t, s, "M1", tChatDM, tPeer); got != "❤️" {
+		t.Errorf("stale snapshot overwrote a newer reaction: %q", got)
+	}
+	must(t, s.SetReaction("M1", tChatDM, tPeer, "", t0.Add(time.Hour)))
+	must(t, s.SetReaction("M1", tChatDM, tPeer, "👍", t0))
+	if n := countReactions(t, s, "M1", tChatDM); n != 0 {
+		t.Error("stale snapshot revived a removed reaction")
+	}
+	must(t, s.SetReaction("M1", tChatDM, tPeer, "🎉", t0.Add(2*time.Hour)))
+	if got := reactionEmoji(t, s, "M1", tChatDM, tPeer); got != "🎉" {
+		t.Errorf("newer reaction after a removal: %q", got)
 	}
 }
 

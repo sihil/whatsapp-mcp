@@ -7,7 +7,7 @@ package main
 // three: an edit rewrites content and stamps edited_at; a revoke leaves a
 // tombstone (empty content, deleted_at, media pointers cleared) so the row is
 // not mistaken for one that never existed; reactions live in their own table,
-// one row per (message, reactor).
+// one row per (message, reactor), a removed one kept with a blank emoji.
 //
 // The decision logic (who may edit or revoke, the edit window) is in pure
 // functions so it can be tested without a WhatsApp client.
@@ -168,23 +168,22 @@ func (store *MessageStore) ApplyRevoke(chatJID, id, revoker string, isAdmin admi
 	return true, tx.Commit()
 }
 
-// SetReaction records one reactor's current reaction to a message. An empty
-// emoji means the reaction was removed, so the row is deleted rather than
-// stored blank. A reaction to a message already deleted for everyone is dropped.
+// SetReaction records one reactor's current reaction to a message. It is a
+// no-op when the message is unknown or already deleted for everyone, and when
+// the row already holds a newer reaction: history sync can deliver a snapshot
+// older than what arrived live. For the same reason a removal (empty emoji)
+// keeps the row with a blank emoji instead of deleting it — without that
+// marker a stale snapshot would bring the removed reaction back. Readers skip
+// blank rows. The timestamp column holds TEXT with mixed offsets, so the
+// comparison goes through julianday(); an unparseable value lets the write in.
 func (store *MessageStore) SetReaction(messageID, chatJID, sender, emoji string, at time.Time) error {
-	if emoji == "" {
-		_, err := store.db.Exec(
-			"DELETE FROM reactions WHERE message_id = ? AND chat_jid = ? AND sender = ?",
-			messageID, chatJID, sender,
-		)
-		return err
-	}
 	_, err := store.db.Exec(
 		`INSERT INTO reactions (message_id, chat_jid, sender, emoji, timestamp)
 		 SELECT ?, ?, ?, ?, ?
-		 WHERE NOT EXISTS (SELECT 1 FROM messages WHERE id = ? AND chat_jid = ? AND deleted_at IS NOT NULL)
+		 WHERE EXISTS (SELECT 1 FROM messages WHERE id = ? AND chat_jid = ? AND deleted_at IS NULL)
 		 ON CONFLICT(message_id, chat_jid, sender) DO UPDATE SET
-			emoji = excluded.emoji, timestamp = excluded.timestamp`,
+			emoji = excluded.emoji, timestamp = excluded.timestamp
+		 WHERE COALESCE(julianday(excluded.timestamp) >= julianday(reactions.timestamp), 1)`,
 		messageID, chatJID, sender, emoji, at, messageID, chatJID,
 	)
 	return err

@@ -53,10 +53,17 @@ func msgState(t *testing.T, s *MessageStore, id, chat string) (content string, e
 	return content, e.Valid, d.Valid, url, mt.String
 }
 
+func must(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func countReactions(t *testing.T, s *MessageStore, id, chat string) int {
 	t.Helper()
 	var n int
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM reactions WHERE message_id = ? AND chat_jid = ?", id, chat).Scan(&n); err != nil {
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM reactions WHERE message_id = ? AND chat_jid = ? AND emoji <> ''", id, chat).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	return n
@@ -164,28 +171,25 @@ func TestRevokeTombstone(t *testing.T) {
 func TestReactionUpsertAndRemove(t *testing.T) {
 	s := newMutationStore(t)
 	putMsg(t, s, "M1", tChatDM, tPeer, "hi", "", false)
-	must := func(err error) {
-		t.Helper()
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	must(s.SetReaction("M1", tChatDM, tMe, "👍", t0))
-	must(s.SetReaction("M1", tChatDM, tMe, "❤️", t0.Add(time.Second)))
-	must(s.SetReaction("M1", tChatDM, tPeer, "😂", t0))
+	must(t, s.SetReaction("M1", tChatDM, tMe, "👍", t0))
+	must(t, s.SetReaction("M1", tChatDM, tMe, "❤️", t0.Add(time.Second)))
+	must(t, s.SetReaction("M1", tChatDM, tPeer, "😂", t0))
 	var emoji string
 	s.db.QueryRow("SELECT emoji FROM reactions WHERE sender = ?", tMe).Scan(&emoji)
 	if emoji != "❤️" || countReactions(t, s, "M1", tChatDM) != 2 {
 		t.Errorf("emoji=%q count=%d", emoji, countReactions(t, s, "M1", tChatDM))
 	}
-	must(s.SetReaction("M1", tChatDM, tMe, "", t0))
+	must(t, s.SetReaction("M1", tChatDM, tMe, "", t0.Add(2*time.Second)))
 	if n := countReactions(t, s, "M1", tChatDM); n != 1 {
 		t.Errorf("count after remove = %d, want 1", n)
 	}
-	var blank int
-	s.db.QueryRow("SELECT COUNT(*) FROM reactions WHERE emoji = ''").Scan(&blank)
-	if blank != 0 {
-		t.Error("stored an empty emoji")
+	must(t, s.SetReaction("M1", tChatDM, tOther, "🔥", t0))
+	if n := countReactions(t, s, "M1", tChatDM); n != 2 {
+		t.Errorf("new reactor after a removal: count = %d, want 2", n)
+	}
+	must(t, s.SetReaction("MISSING", tChatDM, tMe, "👍", t0))
+	if n := countReactions(t, s, "MISSING", tChatDM); n != 0 {
+		t.Error("stored a reaction to an unknown message")
 	}
 }
 
