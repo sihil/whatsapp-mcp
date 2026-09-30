@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -916,7 +917,7 @@ func extractDirectPathFromURL(url string) string {
 }
 
 // Start a REST API server to expose the WhatsApp client functionality
-func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int) {
+func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, listener net.Listener) {
 	// Handler for sending messages
 	http.HandleFunc("/api/send", func(w http.ResponseWriter, r *http.Request) {
 		// Only allow POST requests
@@ -1070,12 +1071,11 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 	})
 
 	// Start the server
-	serverAddr := fmt.Sprintf("127.0.0.1:%d", port)
-	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
+	fmt.Printf("Starting REST API server on %s...\n", listener.Addr())
 
 	// Run server in a goroutine so it doesn't block
 	go func() {
-		if err := http.ListenAndServe(serverAddr, nil); err != nil {
+		if err := http.Serve(listener, nil); err != nil {
 			fmt.Printf("REST API server error: %v\n", err)
 		}
 	}()
@@ -1107,6 +1107,13 @@ func main() {
 	// Set up logger
 	logger := waLog.Stdout("Client", "INFO", true)
 	logger.Infof("Starting WhatsApp client...")
+
+	// Claim the REST port before opening the session (see listenLocal).
+	listener, err := listenLocal(8080)
+	if err != nil {
+		logger.Errorf("Another bridge appears to be running: %v", err)
+		os.Exit(1)
+	}
 
 	// Linked Devices label (takes effect at pairing time, so existing sessions
 	// keep their old label until re-paired). The phone ignores Os and shows
@@ -1183,7 +1190,15 @@ func main() {
 	}
 
 	// Setup event handling for messages and history sync
+	fatalChan := make(chan string, 1)
 	client.AddEventHandler(func(evt interface{}) {
+		if reason, terminal := terminalEventReason(evt); terminal {
+			select {
+			case fatalChan <- reason:
+			default:
+			}
+			return
+		}
 		switch v := evt.(type) {
 		case *events.Message:
 			// Process regular messages
@@ -1269,7 +1284,7 @@ func main() {
 	fmt.Println("\n✓ Connected to WhatsApp! Type 'help' for commands.")
 
 	// Start REST API server
-	startRESTServer(client, messageStore, 8080)
+	startRESTServer(client, messageStore, listener)
 
 	// Create a channel to keep the main goroutine alive
 	exitChan := make(chan os.Signal, 1)
@@ -1277,8 +1292,16 @@ func main() {
 
 	fmt.Println("REST server is running. Press Ctrl+C to disconnect and exit.")
 
-	// Wait for termination signal
-	<-exitChan
+	// Wait for a termination signal, or for the session to be lost for good
+	select {
+	case <-exitChan:
+	case reason := <-fatalChan:
+		// Exit non-zero so a supervisor (launchd KeepAlive) restarts the bridge.
+		logger.Errorf("Exiting: %s", reason)
+		client.Disconnect()
+		messageStore.Close()
+		os.Exit(1)
+	}
 
 	fmt.Println("Disconnecting...")
 	// Disconnect client
