@@ -16,6 +16,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -48,7 +49,8 @@ type Message struct {
 
 // Database handler for storing message history
 type MessageStore struct {
-	db *sql.DB
+	db         *sql.DB
+	mergedLIDs sync.Map // LIDs already folded into their phone number (see lid_merge.go)
 }
 
 // Initialize message store
@@ -96,7 +98,7 @@ func NewMessageStore() (*MessageStore, error) {
 			old_jid TEXT PRIMARY KEY,
 			new_jid TEXT NOT NULL
 		);
-	` + contactsSchema + ";")
+	` + contactsSchema + ";" + senderIndexSchema + ";")
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to create tables: %v", err)
@@ -496,6 +498,9 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	canonicalChat := canonicalChatJID(ctx, client.Store.LIDs, msg.Info.Chat, chatAlt)
 	chatJID := canonicalChat.String()
 	sender := canonicalSenderJID(ctx, client.Store.LIDs, msg.Info.Sender, msg.Info.SenderAlt, client.Store.GetJID(), msg.Info.IsFromMe)
+	if err := messageStore.MergeLIDs(ctx, messageLIDs(msg.Info.MessageSource, canonicalChat, sender)); err != nil {
+		logger.Warnf("Failed to merge LID rows into their phone numbers: %v", err)
+	}
 
 	// Every incoming stanza carries the sender's self-chosen display name. For
 	// a group participant who is not in the address book it is the only name
@@ -1441,6 +1446,9 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 	// The payload's own PN<->LID table must be consulted before the LID
 	// store: whatsmeow ingests it asynchronously, racing this handler.
 	pnMap := historyPNMap(historySync.Data)
+	if err := messageStore.MergeLIDs(context.Background(), pnMap); err != nil {
+		logger.Warnf("Failed to merge LID rows into their phone numbers: %v", err)
+	}
 	ownJID := client.Store.GetJID()
 
 	syncedCount := 0

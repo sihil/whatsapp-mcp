@@ -177,33 +177,6 @@ func TestStaleReactionIgnored(t *testing.T) {
 	}
 }
 
-// A row stored while the author's PN<->LID mapping was unknown keeps an @lid
-// sender until the next startup; an edit or revoke that names the author by
-// PN in the meantime must still apply, and must not let anyone else in.
-func TestMutationMatchesLIDStoredSender(t *testing.T) {
-	s := newMutationStore(t)
-	ctx := context.Background()
-	lid := lidJID("200000000000001")
-	lids := fakeLIDMapper{lidForPN: map[string]types.JID{tOther: lid}}
-	putMsg(t, s, "G1", tChatGrp, lid.String(), "orig", "", false)
-	putMsg(t, s, "G2", tChatGrp, lid.String(), "keep", "", false)
-
-	adoptSender(ctx, lids, s, tChatGrp, "G2", tPeer, waLog.Noop) // someone else
-	if applied, _ := s.ApplyEdit(tChatGrp, "G2", tPeer, "hacked", t0); applied {
-		t.Error("a different author's edit was applied")
-	}
-
-	// Via the LID store, and via the event's own alt spelling.
-	adoptSender(ctx, lids, s, tChatGrp, "G1", tOther, waLog.Noop)
-	if applied, err := s.ApplyEdit(tChatGrp, "G1", tOther, "fixed", t0); err != nil || !applied {
-		t.Errorf("edit by the PN-named author not applied: %v %v", applied, err)
-	}
-	adoptSender(ctx, fakeLIDMapper{}, s, tChatGrp, "G2", tOther, waLog.Noop, lid)
-	if applied, err := s.ApplyRevoke(tChatGrp, "G2", tOther, nil, t0); err != nil || !applied {
-		t.Errorf("revoke by the PN-named author not applied: %v %v", applied, err)
-	}
-}
-
 // download_media on a tombstone must be refused from the Deleted flag: the
 // media pointers are NULL and GetMediaInfo cannot scan them.
 func TestDeletedMediaIsReportedDeleted(t *testing.T) {

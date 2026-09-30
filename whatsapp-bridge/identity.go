@@ -199,44 +199,10 @@ func canonicalizeMessageStore(ctx context.Context, db *sql.DB, lids lidMapper, o
 		return 0, err
 	}
 
-	// mergeChatKey folds the chat row and messages under oldKey into newKey,
-	// leaving an alias behind. The same message id can exist under both keys
-	// (captured live under one namespace, history-synced under the other),
-	// so moves are conflict-aware: the row already under newKey wins. The
-	// timestamp column holds TEXT with mixed local offsets, so comparison
-	// must go through datetime(), not raw MAX().
-	mergeChatKey := func(oldKey, newKey string) error {
-		if err := count(tx.ExecContext(ctx, `
-			INSERT INTO jid_aliases (old_jid, new_jid) VALUES (?, ?)
-			ON CONFLICT(old_jid) DO UPDATE SET new_jid = excluded.new_jid`,
-			oldKey, newKey)); err != nil {
-			return err
-		}
-		if err := count(tx.ExecContext(ctx, `
-			INSERT INTO chats (jid, name, last_message_time)
-			SELECT ?, name, last_message_time FROM chats WHERE jid = ?
-			ON CONFLICT(jid) DO UPDATE SET
-				name = CASE WHEN (chats.name IS NULL OR chats.name = '') AND excluded.name <> '' THEN excluded.name ELSE chats.name END,
-				last_message_time = CASE
-					WHEN chats.last_message_time IS NULL THEN excluded.last_message_time
-					WHEN excluded.last_message_time IS NOT NULL
-						AND datetime(excluded.last_message_time) > datetime(chats.last_message_time)
-						THEN excluded.last_message_time
-					ELSE chats.last_message_time
-				END`,
-			newKey, oldKey)); err != nil {
-			return err
-		}
-		if err := count(tx.ExecContext(ctx, `UPDATE OR IGNORE messages SET chat_jid = ? WHERE chat_jid = ?`, newKey, oldKey)); err != nil {
-			return err
-		}
-		if err := count(tx.ExecContext(ctx, `DELETE FROM messages WHERE chat_jid = ?`, oldKey)); err != nil {
-			return err
-		}
-		if err := moveColumnValue(ctx, tx, "chat_jid", oldKey, newKey); err != nil {
-			return err
-		}
-		return count(tx.ExecContext(ctx, `DELETE FROM chats WHERE jid = ?`, oldKey))
+	merge := func(oldKey, newKey string) error {
+		n, err := mergeChatKey(ctx, tx, oldKey, newKey)
+		changed += n
+		return err
 	}
 
 	// 1a. Merge @lid-keyed DM chats into their PN key where the mapping is
@@ -254,7 +220,7 @@ func canonicalizeMessageStore(ctx context.Context, db *sql.DB, lids lidMapper, o
 		if err != nil || pn.IsEmpty() {
 			continue
 		}
-		if err := mergeChatKey(lidKey, pn.ToNonAD().String()); err != nil {
+		if err := merge(lidKey, pn.ToNonAD().String()); err != nil {
 			return 0, err
 		}
 	}
@@ -269,7 +235,7 @@ func canonicalizeMessageStore(ctx context.Context, db *sql.DB, lids lidMapper, o
 		if err != nil {
 			continue
 		}
-		if err := mergeChatKey(oldKey, normalizeLegacyServer(jid).String()); err != nil {
+		if err := merge(oldKey, normalizeLegacyServer(jid).String()); err != nil {
 			return 0, err
 		}
 	}
