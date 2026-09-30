@@ -3,6 +3,7 @@
 Reads (`db*`) query the bridge's SQLite store directly; writes and live
 actions (`api_client`) go through the bridge's REST API.
 """
+from api_actions import delete_message, edit_message, send_reaction
 from api_client import (
     download_media,
     get_group_members,
@@ -28,7 +29,9 @@ __all__ = [
     "Message",
     "MessageContext",
     "api_base_url",
+    "delete_message",
     "download_media",
+    "edit_message",
     "format_message",
     "get_chat",
     "get_contact_chats",
@@ -44,4 +47,5 @@ __all__ = [
     "send_audio_message",
     "send_file",
     "send_message",
+    "send_reaction",
 ]

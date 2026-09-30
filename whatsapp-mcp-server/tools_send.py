@@ -7,11 +7,14 @@ from pydantic import Field
 
 from server import mcp
 from whatsapp import (
+    delete_message as whatsapp_delete_message,
+    edit_message as whatsapp_edit_message,
     download_media as whatsapp_download_media,
     get_group_members as whatsapp_get_group_members,
     send_audio_message as whatsapp_send_audio_message,
     send_file as whatsapp_send_file,
     send_message as whatsapp_send_message,
+    send_reaction as whatsapp_send_reaction,
 )
 
 _RECIPIENT_DESC = (
@@ -26,6 +29,17 @@ _SEND = ToolAnnotations(
 _DOWNLOAD = ToolAnnotations(
     readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True
 )
+_REACT = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True
+)
+_EDIT = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True
+)
+_DELETE = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=True
+)
+_CHAT_JID_DESC = "The JID of the chat containing the message"
+_MESSAGE_ID_DESC = "The ID of the message (as shown by list_messages)"
 _GROUP_MEMBERS = ToolAnnotations(readOnlyHint=True, openWorldHint=True)
 
 
@@ -43,7 +57,8 @@ def send_message(
     ] = None,
 ) -> Dict[str, Any]:
     """Send a WhatsApp message to a person or group. For group chats use the
-    JID. Returns a dict with success status and a status message. Raises on
+    JID. Returns a dict with success status and a status message, which carries
+    the new message's ID (the handle for edit_message / delete_message). Raises on
     failure (invalid recipient, unreachable bridge, or a rejected send)."""
     success, status_message = whatsapp_send_message(recipient, message, reply_to)
     if not success:
@@ -140,3 +155,55 @@ def list_group_members(
         # as a group with zero members.
         raise RuntimeError(result.get("message", "Unknown error"))
     return result
+
+
+@mcp.tool(title="Send Reaction", annotations=_REACT)
+def send_reaction(
+    chat_jid: Annotated[str, Field(description=_CHAT_JID_DESC)],
+    message_id: Annotated[str, Field(description=_MESSAGE_ID_DESC)],
+    emoji: Annotated[
+        str,
+        Field(description="The reaction emoji, e.g. \"👍\". Pass an empty string to remove "
+              "your existing reaction."),
+    ],
+) -> Dict[str, Any]:
+    """React to a WhatsApp message with an emoji, replacing any earlier
+    reaction of yours on it, or remove your reaction with an empty emoji.
+    Returns a dict with success status and a status message. Raises on failure
+    (message not found, unreachable bridge, or a rejected send)."""
+    success, status_message = whatsapp_send_reaction(chat_jid, message_id, emoji)
+    if not success:
+        raise RuntimeError(status_message)
+    return {"success": True, "message": status_message}
+
+
+@mcp.tool(title="Edit Message", annotations=_EDIT)
+def edit_message(
+    chat_jid: Annotated[str, Field(description=_CHAT_JID_DESC)],
+    message_id: Annotated[str, Field(description=_MESSAGE_ID_DESC)],
+    message: Annotated[str, Field(description="The new text for the message")],
+) -> Dict[str, Any]:
+    """Edit the text of a message you sent. Only your own text messages can be
+    edited, only within 15 minutes of sending, and not once deleted. Returns a
+    dict with success status and a status message. Raises on failure (message
+    not found or not editable, unreachable bridge, or a rejected send)."""
+    success, status_message = whatsapp_edit_message(chat_jid, message_id, message)
+    if not success:
+        raise RuntimeError(status_message)
+    return {"success": True, "message": status_message}
+
+
+@mcp.tool(title="Delete Message", annotations=_DELETE)
+def delete_message(
+    chat_jid: Annotated[str, Field(description=_CHAT_JID_DESC)],
+    message_id: Annotated[str, Field(description=_MESSAGE_ID_DESC)],
+) -> Dict[str, Any]:
+    """Delete a message you sent, for everyone in the chat ("delete for
+    everyone"). This cannot be undone. Afterwards the message still appears in
+    listings as deleted, with empty content. Returns a dict with success status
+    and a status message. Raises on failure (message not found or not yours,
+    unreachable bridge, or a rejected send)."""
+    success, status_message = whatsapp_delete_message(chat_jid, message_id)
+    if not success:
+        raise RuntimeError(status_message)
+    return {"success": True, "message": status_message}
