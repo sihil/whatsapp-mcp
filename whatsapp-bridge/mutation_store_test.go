@@ -226,15 +226,25 @@ func TestCanonicalizeMovesReactions(t *testing.T) {
 	lids := fakeLIDMapper{pnForLID: map[string]types.JID{lidChat: pnJID("15550001001")}}
 	putMsg(t, s, "R1", lidChat, lidPeer, "hi", "", false)
 	putMsg(t, s, "R2", tChatGrp, tOther, "hi", "", false)
-	for _, r := range [][4]string{
-		{"R1", lidChat, lidPeer, "👍"},
-		{"R1", lidChat, tMe, "❤️"},
-		{"R2", tChatGrp, lidPeer, "old"}, // same reactor under both namespaces
-		{"R2", tChatGrp, tPeer, "new"},
+	putMsg(t, s, "R3", tChatGrp, tOther, "hi", "", false)
+	putMsg(t, s, "R4", tChatGrp, tOther, "hi", "", false)
+	later := t0.Add(time.Minute)
+	for _, r := range []struct {
+		id, chat, sender, emoji string
+		at                      time.Time
+	}{
+		{"R1", lidChat, lidPeer, "👍", t0},
+		{"R1", lidChat, tMe, "❤️", t0},
+		// The same reactor under both namespaces: the newer row wins, the PN
+		// one on a tie.
+		{"R2", tChatGrp, lidPeer, "old", t0},
+		{"R2", tChatGrp, tPeer, "new", t0},
+		{"R3", tChatGrp, lidPeer, "changed", later},
+		{"R3", tChatGrp, tPeer, "stale", t0},
+		{"R4", tChatGrp, lidPeer, "", later}, // a newer removal
+		{"R4", tChatGrp, tPeer, "stale", t0},
 	} {
-		if err := s.SetReaction(r[0], r[1], r[2], r[3], t0); err != nil {
-			t.Fatal(err)
-		}
+		must(t, s.SetReaction(r.id, r.chat, r.sender, r.emoji, r.at))
 	}
 
 	for run := 1; run <= 2; run++ {
@@ -249,6 +259,15 @@ func TestCanonicalizeMovesReactions(t *testing.T) {
 		}
 		if n := countReactions(t, s, "R2", tChatGrp); n != 1 {
 			t.Errorf("run %d: duplicate reactor rows: %d", run, n)
+		}
+		if got := reactionEmoji(t, s, "R2", tChatGrp, tPeer); got != "new" {
+			t.Errorf("run %d: tie did not keep the PN row: %q", run, got)
+		}
+		if got := reactionEmoji(t, s, "R3", tChatGrp, tPeer); got != "changed" {
+			t.Errorf("run %d: older PN row beat a newer @lid one: %q", run, got)
+		}
+		if n := countReactions(t, s, "R4", tChatGrp); n != 0 {
+			t.Errorf("run %d: a newer removal under @lid did not win", run)
 		}
 		var stale int
 		s.db.QueryRow("SELECT COUNT(*) FROM reactions WHERE chat_jid LIKE '%@lid' OR sender LIKE '%@lid'").Scan(&stale)

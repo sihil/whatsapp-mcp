@@ -52,10 +52,22 @@ func (store *MessageStore) AdoptSender(chatJID, id, canonical string, aliases []
 	return err
 }
 
-// moveColumnValue rewrites reactions.<column> from oldVal to newVal. A row
-// already present under newVal wins, like the message rows it belongs to.
-// column is "chat_jid" or "sender", never caller input.
+// moveColumnValue rewrites reactions.<column> from oldVal to newVal. When the
+// same reactor has a row on the same message under both, the newer one wins,
+// as in SetReaction: a row under newVal that is older than its counterpart is
+// dropped first, and the UPDATE OR IGNORE then leaves the older counterparts
+// behind for the DELETE. column is "chat_jid" or "sender", never caller input.
 func moveColumnValue(ctx context.Context, tx *sql.Tx, column, oldVal, newVal string) error {
+	other := "sender"
+	if column == "sender" {
+		other = "chat_jid"
+	}
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM reactions WHERE "+column+" = ? AND EXISTS (SELECT 1 FROM reactions o WHERE o."+column+" = ?"+
+			" AND o.message_id = reactions.message_id AND o."+other+" = reactions."+other+
+			" AND julianday(o.timestamp) > julianday(reactions.timestamp))", newVal, oldVal); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx,
 		"UPDATE OR IGNORE reactions SET "+column+" = ? WHERE "+column+" = ?", newVal, oldVal); err != nil {
 		return err
