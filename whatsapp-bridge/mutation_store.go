@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -30,6 +31,25 @@ func recordSentMessage(ctx context.Context, lids lidMapper, store *MessageStore,
 	}
 	return store.StoreMessage(id, chatJID, ownJID.ToNonAD().String(), content, at, true,
 		mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength)
+}
+
+// AdoptSender rewrites one message's stored sender to canonical when it is
+// currently one of aliases — other spellings of the same account. A row
+// written while the PN<->LID mapping was unknown keeps its "@lid" sender until
+// the next startup canonicalization; an edit or revoke arriving in between
+// names the author by PN and would not match it.
+func (store *MessageStore) AdoptSender(chatJID, id, canonical string, aliases []string) error {
+	if len(aliases) == 0 {
+		return nil
+	}
+	args := []any{canonical, id, chatJID}
+	for _, alias := range aliases {
+		args = append(args, alias)
+	}
+	_, err := store.db.Exec(
+		"UPDATE messages SET sender = ? WHERE id = ? AND chat_jid = ? AND sender IN (?"+
+			strings.Repeat(", ?", len(aliases)-1)+")", args...)
+	return err
 }
 
 // moveColumnValue rewrites reactions.<column> from oldVal to newVal. A row

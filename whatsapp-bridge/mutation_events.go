@@ -100,8 +100,34 @@ func handleMutationEvent(client *whatsmeow.Client, store *MessageStore, msg *eve
 			at = time.UnixMilli(ms)
 		}
 	}
+	if mu.kind != mutationReaction && !msg.Info.IsFromMe {
+		adoptSender(context.Background(), client.Store.LIDs, store, chatJID, mu.targetID, sender, logger,
+			msg.Info.Sender, msg.Info.SenderAlt)
+	}
 	applyMutation(store, mu, chatJID, sender, groupAdminCheck(client, msg.Info.Chat, msg.Info.Sender, logger), at, logger)
 	return true
+}
+
+// adoptSender brings the target row's sender up to date before an edit or
+// revoke is matched against it (see AdoptSender). canonical is the author as
+// the event names them; spellings are the other forms the event carries, and
+// the LID store supplies the LID behind a PN author.
+func adoptSender(ctx context.Context, lids lidMapper, store *MessageStore, chatJID, id, canonical string,
+	logger waLog.Logger, spellings ...types.JID) {
+	if pn, err := types.ParseJID(canonical); err == nil && pn.Server == types.DefaultUserServer {
+		if lid, err := lids.GetLIDForPN(ctx, pn); err == nil {
+			spellings = append(spellings, lid)
+		}
+	}
+	var aliases []string
+	for _, jid := range spellings {
+		if s := jid.ToNonAD().String(); !jid.IsEmpty() && s != canonical {
+			aliases = append(aliases, s)
+		}
+	}
+	if err := store.AdoptSender(chatJID, id, canonical, aliases); err != nil {
+		logger.Warnf("Failed to update the sender of %s: %v", id, err)
+	}
 }
 
 // groupAdminCheck builds the adminCheck for a live revoke: it asks WhatsApp
