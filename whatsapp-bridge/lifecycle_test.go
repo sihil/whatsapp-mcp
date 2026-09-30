@@ -2,6 +2,9 @@ package main
 
 import (
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"go.mau.fi/whatsmeow/types/events"
@@ -23,6 +26,27 @@ func TestListenLocalRejectsSecondInstance(t *testing.T) {
 	if err == nil {
 		second.Close()
 		t.Fatalf("second listen on port %d succeeded, want an error", addr.Port)
+	}
+}
+
+// Until the WhatsApp connection is up, requests are refused at once instead of
+// waiting in the accept backlog to run late.
+func TestGateHandler(t *testing.T) {
+	ready := new(atomic.Bool)
+	h := gateHandler(ready, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	serve := func() int {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/send", nil))
+		return rec.Code
+	}
+	if code := serve(); code != http.StatusServiceUnavailable {
+		t.Errorf("before ready: %d, want 503", code)
+	}
+	ready.Store(true)
+	if code := serve(); code != http.StatusTeapot {
+		t.Errorf("after ready: %d, want the handler's answer", code)
 	}
 }
 

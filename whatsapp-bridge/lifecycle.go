@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"net"
+	"net/http"
+	"sync/atomic"
 
 	"go.mau.fi/whatsmeow/types/events"
 )
@@ -13,6 +15,34 @@ import (
 // the same session and knocking the first one offline (see terminalEventReason).
 func listenLocal(port int) (net.Listener, error) {
 	return net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+}
+
+// serveGated starts answering on listener right away and returns the gate that
+// lets requests through to next. Until the gate is set the bridge is still
+// pairing or connecting, and every request gets a 503: left unserved, requests
+// would sit in the accept backlog and run whenever the connection came up —
+// after the caller had already timed out and possibly retried.
+func serveGated(listener net.Listener, next http.Handler) *atomic.Bool {
+	ready := new(atomic.Bool)
+	go func() {
+		if err := http.Serve(listener, gateHandler(ready, next)); err != nil {
+			fmt.Printf("REST API server error: %v\n", err)
+		}
+	}()
+	return ready
+}
+
+// gateHandler answers 503 in plain text (not the JSON {success,message} body:
+// nothing was attempted, and the Python client only counts JSON answers
+// against its send rate limit) until ready is set.
+func gateHandler(ready *atomic.Bool, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !ready.Load() {
+			http.Error(w, "WhatsApp bridge is starting and not connected yet; try again shortly", http.StatusServiceUnavailable)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // terminalEventReason reports whether evt leaves the client permanently

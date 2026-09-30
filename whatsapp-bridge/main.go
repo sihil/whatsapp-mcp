@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,6 +16,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -951,8 +951,9 @@ func extractDirectPathFromURL(url string) string {
 	return "/" + pathPart
 }
 
-// Start a REST API server to expose the WhatsApp client functionality
-func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, listener net.Listener) {
+// Register the REST API handlers that expose the WhatsApp client
+// functionality, then open the gate the server has been holding shut.
+func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, ready *atomic.Bool) {
 	// Handler for sending messages
 	http.HandleFunc("/api/send", func(w http.ResponseWriter, r *http.Request) {
 		// Only allow POST requests
@@ -1107,15 +1108,9 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, liste
 
 	registerMutationHandlers(client, messageStore)
 
-	// Start the server
-	fmt.Printf("Starting REST API server on %s...\n", listener.Addr())
-
-	// Run server in a goroutine so it doesn't block
-	go func() {
-		if err := http.Serve(listener, nil); err != nil {
-			fmt.Printf("REST API server error: %v\n", err)
-		}
-	}()
+	// The server has been answering 503 since startup (see serveGated).
+	ready.Store(true)
+	fmt.Println("REST API is accepting requests")
 }
 
 // pairDisplayName returns the client display name sent with a pairing-code
@@ -1151,6 +1146,7 @@ func main() {
 		logger.Errorf("Another bridge appears to be running: %v", err)
 		os.Exit(1)
 	}
+	apiReady := serveGated(listener, http.DefaultServeMux)
 
 	// Linked Devices label (takes effect at pairing time, so existing sessions
 	// keep their old label until re-paired). The phone ignores Os and shows
@@ -1321,7 +1317,7 @@ func main() {
 	fmt.Println("\n✓ Connected to WhatsApp! Type 'help' for commands.")
 
 	// Start REST API server
-	startRESTServer(client, messageStore, listener)
+	startRESTServer(client, messageStore, apiReady)
 
 	// Create a channel to keep the main goroutine alive
 	exitChan := make(chan os.Signal, 1)
