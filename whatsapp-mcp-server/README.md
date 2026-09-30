@@ -1,6 +1,6 @@
 # whatsapp-mcp-server
 
-Python MCP server (FastMCP, stdio transport) that exposes WhatsApp search/read/send
+Python MCP server (`mcp` SDK v2 `MCPServer`, stdio transport) that exposes WhatsApp search/read/send
 tools to an MCP client (Claude Desktop, Cursor). It works together with the Go
 bridge in `../whatsapp-bridge/` — see the repo-root `README.md` for the full setup
 (running the bridge, QR/pairing auth) and the repo-root `CLAUDE.md` for architecture
@@ -80,7 +80,7 @@ render as a playable voice message).
 
 - `main.py` — entrypoint; imports `server` and the tool modules, runs the
   stdio transport.
-- `server.py` — the shared `FastMCP` instance.
+- `server.py` — the shared `MCPServer` instance.
 - `config.py` — env var reads, logging setup.
 - `tools_read.py` / `tools_send.py` — the `@mcp.tool()` wrappers.
 - `models.py` — dataclasses for messages/chats/contacts.

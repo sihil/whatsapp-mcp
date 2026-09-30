@@ -15,7 +15,7 @@ Two cooperating processes; both must be running for the system to work:
    - `POST /api/download` — download media from a message to disk
    - `POST /api/group/members` — list group members (with contact-name lookup)
 
-2. **`whatsapp-mcp-server/`** — Python MCP server (FastMCP, stdio transport), split into small modules (each ≤300 lines, see `whatsapp-mcp-server/README.md` for the full breakdown).
+2. **`whatsapp-mcp-server/`** — Python MCP server (`mcp` SDK v2 `MCPServer`, stdio transport), split into small modules (each ≤300 lines, see `whatsapp-mcp-server/README.md` for the full breakdown).
 
 **Data flow is split by operation type:**
 - **Reads** (list/search messages, chats, contacts): Python queries the bridge's SQLite DB **directly** at `whatsapp-bridge/store/messages.db` (path computed relative to `config.py`; override with `WHATSAPP_MCP_DB_PATH`). The Go bridge is not involved.
