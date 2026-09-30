@@ -14,7 +14,8 @@ from db import (
     parse_date_param,
     placeholders,
 )
-from db_names import contacts_available, message_source
+from db_names import contacts_available, message_source, status_available
+from db_reactions import attach_reactions, reactions_available
 from models import Message, MessageContext
 
 logger = logging.getLogger(__name__)
@@ -128,7 +129,7 @@ def list_messages(
     conn = connect()
     try:
         cursor = conn.cursor()
-        source = message_source(contacts_available(cursor))
+        source = message_source(contacts_available(cursor), status_available(cursor))
         where_clauses, params = _build_message_filters(
             cursor, after, before, sender_phone_number, chat_jid, query
         )
@@ -145,10 +146,14 @@ def list_messages(
         name_cache: Dict[str, Optional[str]] = {}
         messages = messages_from_rows(cursor, rows, name_cache)
 
+        with_reactions = reactions_available(cursor)
         if not include_context:
+            if with_reactions:
+                attach_reactions(cursor, messages, name_cache)
             return [message.to_dict() for message in messages]
 
         results: List[Dict[str, Any]] = []
+        windows: List[Tuple[List[Message], List[Message]]] = []
         for row, message in zip(rows, messages):
             try:
                 context_before_msgs, context_after_msgs = _context_around(
@@ -159,10 +164,19 @@ def list_messages(
                 # One failed context lookup must not lose the whole listing.
                 logger.warning(f"Could not load context for message {message.id}: {e}")
                 context_before_msgs, context_after_msgs = [], []
+            windows.append((context_before_msgs, context_after_msgs))
+
+        if with_reactions:
+            # One bulk fetch for the matches and every context window.
+            everything = list(messages)
+            for window_before, window_after in windows:
+                everything.extend(window_before + window_after)
+            attach_reactions(cursor, everything, name_cache)
+        for message, (window_before, window_after) in zip(messages, windows):
             results.append({
                 "message": message.to_dict(),
-                "context_before": [msg.to_dict() for msg in context_before_msgs],
-                "context_after": [msg.to_dict() for msg in context_after_msgs],
+                "context_before": [msg.to_dict() for msg in window_before],
+                "context_after": [msg.to_dict() for msg in window_after],
             })
         return results
     finally:
@@ -181,7 +195,7 @@ def get_message_context(
     conn = connect()
     try:
         cursor = conn.cursor()
-        source = message_source(contacts_available(cursor))
+        source = message_source(contacts_available(cursor), status_available(cursor))
         query = f"{source} WHERE messages.id = ?"
         params: List[Any] = [message_id]
         if chat_jid:
@@ -198,6 +212,8 @@ def get_message_context(
         before_messages, after_messages = _context_around(
             cursor, source, target.chat_jid, target.id, row[5], before, after, name_cache
         )
+        if reactions_available(cursor):
+            attach_reactions(cursor, [target, *before_messages, *after_messages], name_cache)
         return MessageContext(
             message=target, before=before_messages, after=after_messages
         ).to_dict()

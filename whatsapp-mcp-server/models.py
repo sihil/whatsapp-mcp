@@ -1,6 +1,6 @@
 """Dataclasses for the rows the message store holds, plus the `to_dict()`
 serializations the MCP tools return."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -16,10 +16,15 @@ class Message:
     chat_name: Optional[str] = None
     media_type: Optional[str] = None
     sender_name: Optional[str] = None
+    edited: bool = False
+    deleted: bool = False
+    reactions: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """`sender_name` is "Me" for own messages, the contact/chat name when
-        known, and falls back to the raw sender JID otherwise."""
+        known, and falls back to the raw sender JID otherwise. A deleted message
+        keeps its row but has empty `content`; `reactions` holds one
+        {emoji, sender, sender_name, is_from_me} per reactor."""
         return {
             "id": self.id,
             "chat_jid": self.chat_jid,
@@ -30,6 +35,9 @@ class Message:
             "content": self.content,
             "is_from_me": bool(self.is_from_me),
             "media_type": self.media_type,
+            "edited": bool(self.edited),
+            "deleted": bool(self.deleted),
+            "reactions": self.reactions,
         }
 
 

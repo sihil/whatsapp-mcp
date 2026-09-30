@@ -76,7 +76,12 @@ def format_message(message: Message, show_chat_info: bool = True, cursor=None) -
         sender_name = "Me"
     else:
         sender_name = message.sender_name or get_sender_name(message.sender, cursor)
-    return f"{output}From: {sender_name}: {content_prefix}{message.content}\n"
+    # A deleted message has no content left; say so rather than print a blank.
+    if message.deleted:
+        body = "[deleted]"
+    else:
+        body = f"{message.content} (edited)" if message.edited else message.content
+    return f"{output}From: {sender_name}: {content_prefix}{body}\n"
 
 
 def list_chats(

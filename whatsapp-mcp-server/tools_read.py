@@ -69,7 +69,9 @@ def list_messages(
     newest first. With include_context each item is {"message": {...},
     "context_before": [...], "context_after": [...]}; without it each item is a
     message dict (id, chat_jid, chat_name, sender, sender_name, timestamp,
-    content, is_from_me, media_type)."""
+    content, is_from_me, media_type, edited, deleted, reactions). A deleted
+    message has deleted=true and empty content; reactions is a list of
+    {emoji, sender, sender_name, is_from_me}."""
     return whatsapp_list_messages(
         after=after,
         before=before,
@@ -149,7 +151,8 @@ def get_last_interaction(
     jid: Annotated[str, Field(description="The JID of the contact to search for")],
 ) -> str:
     """Get most recent WhatsApp message involving the contact, as a formatted
-    line. Errors when there is no message involving the contact."""
+    line; a deleted message reads "[deleted]", an edited one ends "(edited)".
+    Errors when there is no message involving the contact."""
     return whatsapp_get_last_interaction(jid)
 
 
@@ -178,5 +181,7 @@ def get_message_context(
 ) -> Dict[str, Any]:
     """Get context around a specific WhatsApp message. Returns {"message":
     {...}, "before": [...], "after": [...]}, the context lists in
-    chronological order. Errors when the message is not found."""
+    chronological order; each message dict carries edited, deleted (deleted
+    messages have empty content) and reactions. Errors when the message is not
+    found."""
     return whatsapp_get_message_context(message_id, before, after, chat_jid)
