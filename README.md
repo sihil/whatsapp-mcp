@@ -149,7 +149,12 @@ Claude can access the following tools to interact with WhatsApp:
 - **send_message**: Send a WhatsApp message to a specified phone number or group JID
 - **send_file**: Send a file (image, video, raw audio, document) to a specified recipient
 - **send_audio_message**: Send an audio file as a WhatsApp voice message (requires the file to be an .ogg opus file or ffmpeg must be installed)
+- **send_reaction**: React to a message with an emoji (an empty emoji removes your reaction)
+- **edit_message**: Edit one of your own text messages (WhatsApp allows this for 15 minutes after sending)
+- **delete_message**: Delete one of your own messages for everyone
 - **download_media**: Download media from a WhatsApp message and get the local file path
+
+Messages returned by the read tools also carry `edited`, `deleted` (a deleted message keeps its row with empty content) and `reactions`.
 
 ### Media Handling Features
 

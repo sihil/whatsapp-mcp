@@ -14,7 +14,8 @@ notes.
   read-only. The Go bridge does not need to be running for these to work, as
   long as `messages.db` already exists.
 - **Writes / live actions** (`send_message`, `send_file`, `send_audio_message`,
-  `download_media`, `list_group_members`) call the bridge's REST API at
+  `send_reaction`, `edit_message`, `delete_message`, `download_media`,
+  `list_group_members`) call the bridge's REST API at
   `http://localhost:8080/api` (or `WHATSAPP_API_BASE_URL`), which talks to
   WhatsApp. The bridge must be running for these.
 
@@ -52,6 +53,11 @@ uv run main.py
   Contains the `chats`, `messages`, `jid_aliases`, and `contacts` tables
   written by the Go bridge. Override with `WHATSAPP_MCP_DB_PATH`.
 
+  Messages carry `edited`/`deleted` (from `messages.edited_at`/`deleted_at`) and
+  `reactions` (from the `reactions` table); a store from an older bridge lacking
+  them reads as unedited, undeleted, unreacted. A deleted message keeps its row
+  with empty `content`.
+
   Sender and chat names come from `contacts`, falling back to `chats`. A store
   written by a bridge that predates that table still works — senders just show
   as JIDs until the bridge is restarted, which creates and backfills it.
@@ -65,7 +71,7 @@ uv run main.py
 | `WHATSAPP_MCP_DB_PATH` | `../whatsapp-bridge/store/messages.db` (relative to this dir) | Overrides the path to the bridge's message store, opened read-only. |
 | `WHATSAPP_API_BASE_URL` | `http://localhost:8080/api` | Overrides the bridge's REST API base URL. |
 | `WHATSAPP_MCP_ALLOWED_MEDIA_DIRS` | unset (no restriction) | Allowlist of directories that outbound media files (for `send_file`/`send_audio_message`) must live under, separated by `os.pathsep` (`:` on Unix, `;` on Windows). Paths are resolved with `realpath` before comparison, but the caller's original path is what gets sent. Unset means any existing file is allowed. |
-| `WHATSAPP_MCP_SEND_RATE_LIMIT` | `30` | Max outbound sends (across `send_message`, `send_file`, `send_audio_message`) per rolling minute. `0` or a negative value disables the limiter. |
+| `WHATSAPP_MCP_SEND_RATE_LIMIT` | `30` | Max outbound sends (across `send_message`, `send_file`, `send_audio_message`, `send_reaction`, `edit_message`, `delete_message`) per rolling minute. `0` or a negative value disables the limiter. |
 | `WHATSAPP_MCP_LOG_LEVEL` | `INFO` | Log level for the server's stderr logging. stdout carries only JSON-RPC — nothing is ever printed to stdout. |
 
 ## FFmpeg
@@ -91,6 +97,8 @@ render as a playable voice message).
   contact, the chats they appear in) and builds on `db_chats.chat_query`.
 - `api_client.py` — REST calls to the bridge (send/download/group members),
   rate limiting, media-path validation.
+- `api_actions.py` — react/edit/delete calls, on api_client's limiter and transport.
+- `db_reactions.py` — bulk fetch of a page's reactions.
 - `whatsapp.py` — thin façade re-exporting the public functions for backward
   compatible imports.
 - `audio.py` — FFmpeg conversion helper.
