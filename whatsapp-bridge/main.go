@@ -86,6 +86,8 @@ func NewMessageStore() (*MessageStore, error) {
 			file_sha256 BLOB,
 			file_enc_sha256 BLOB,
 			file_length INTEGER,
+			edited_at TIMESTAMP,
+			deleted_at TIMESTAMP,
 			PRIMARY KEY (id, chat_jid),
 			FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 		);
@@ -98,6 +100,10 @@ func NewMessageStore() (*MessageStore, error) {
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to create tables: %v", err)
+	}
+	if err := migrateMutations(db); err != nil {
+		db.Close()
+		return nil, err
 	}
 
 	return &MessageStore{db: db}, nil
@@ -134,10 +140,21 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 		return nil
 	}
 
+	// Upsert rather than INSERT OR REPLACE so a re-delivered message (history
+	// sync) cannot wipe edited_at/deleted_at: a tombstone is never resurrected,
+	// and an edited message keeps its edited text.
 	_, err := store.db.Exec(
-		`INSERT OR REPLACE INTO messages 
-		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length) 
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO messages
+		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id, chat_jid) DO UPDATE SET
+			sender = excluded.sender,
+			content = CASE WHEN messages.edited_at IS NOT NULL THEN messages.content ELSE excluded.content END,
+			timestamp = excluded.timestamp, is_from_me = excluded.is_from_me,
+			media_type = excluded.media_type, filename = excluded.filename, url = excluded.url,
+			media_key = excluded.media_key, file_sha256 = excluded.file_sha256,
+			file_enc_sha256 = excluded.file_enc_sha256, file_length = excluded.file_length
+		WHERE messages.deleted_at IS NULL`,
 		id, chatJID, sender, content, timestamp, isFromMe, mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength,
 	)
 	return err
@@ -413,13 +430,20 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 	}
 
 	// Send message
-	_, err = client.SendMessage(context.Background(), recipientJID, msg)
+	resp, err := client.SendMessage(context.Background(), recipientJID, msg)
 
 	if err != nil {
 		return false, fmt.Sprintf("Error sending message: %v", err)
 	}
 
-	return true, fmt.Sprintf("Message sent to %s", recipient)
+	// No echo reaches the sending device: store the row ourselves so the
+	// message can be listed, edited and deleted (see mutation_store.go).
+	if err := recordSentMessage(context.Background(), client.Store.LIDs, messageStore, recipientJID,
+		client.Store.GetJID(), resp.ID, resp.Timestamp, msg); err != nil {
+		fmt.Printf("Failed to store sent message %s: %v\n", resp.ID, err)
+	}
+
+	return true, fmt.Sprintf("Message sent to %s (ID: %s)", recipient, resp.ID)
 }
 
 // Extract media info from a message
@@ -472,6 +496,12 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	canonicalChat := canonicalChatJID(ctx, client.Store.LIDs, msg.Info.Chat, chatAlt)
 	chatJID := canonicalChat.String()
 	sender := canonicalSenderJID(ctx, client.Store.LIDs, msg.Info.Sender, msg.Info.SenderAlt, client.Store.GetJID(), msg.Info.IsFromMe)
+
+	// Reactions, edits and revokes update existing rows; they are not messages
+	// and must not bump the chat's last message time (see mutation_events.go).
+	if handleMutationEvent(client, messageStore, msg, chatJID, sender, logger) {
+		return
+	}
 
 	// Get appropriate chat name (pass nil for conversation since we don't
 	// have one for regular messages). May be empty when the contact store
@@ -658,6 +688,11 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 		if resolved := resolveStoredChatJID(context.Background(), client.Store, messageStore, messageID, jid); resolved != jid {
 			chatJID = resolved.String()
 		}
+	}
+
+	// A tombstone has no media pointers left to download from.
+	if m, err := messageStore.GetStoredMessage(context.Background(), messageID, chatJID); err == nil && m.Deleted {
+		return false, "", "", "", fmt.Errorf("message was deleted")
 	}
 
 	// First, check if we already have this file
@@ -1070,6 +1105,8 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, liste
 		})
 	})
 
+	registerMutationHandlers(client, messageStore)
+
 	// Start the server
 	fmt.Printf("Starting REST API server on %s...\n", listener.Addr())
 
@@ -1477,6 +1514,12 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 
 				// Log the message content for debugging
 				logger.Infof("Message content: %v, Media Type: %v", content, mediaType)
+
+				// Reactions ride on the message; a REVOKE stub is a deleted
+				// message and has nothing to store (see mutation_events.go).
+				if applyHistoryMutations(context.Background(), client.Store.LIDs, messageStore, msg.Message, jid, ownJID, pnMap, logger) {
+					continue
+				}
 
 				// Skip messages with no content and no media
 				if content == "" && mediaType == "" {

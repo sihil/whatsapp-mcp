@@ -229,6 +229,9 @@ func canonicalizeMessageStore(ctx context.Context, db *sql.DB, lids lidMapper, o
 		if err := count(tx.ExecContext(ctx, `DELETE FROM messages WHERE chat_jid = ?`, oldKey)); err != nil {
 			return err
 		}
+		if err := moveReactionsChatKey(ctx, tx, oldKey, newKey); err != nil {
+			return err
+		}
 		return count(tx.ExecContext(ctx, `DELETE FROM chats WHERE jid = ?`, oldKey))
 	}
 
@@ -331,6 +334,11 @@ func canonicalizeMessageStore(ctx context.Context, db *sql.DB, lids lidMapper, o
 			`UPDATE messages SET sender = ? WHERE sender = ?`, canonical.String(), stored)); err != nil {
 			return 0, err
 		}
+	}
+
+	// 6. Reactors follow the same sender rule (see mutation_store.go).
+	if err := canonicalizeReactionSenders(ctx, tx, lids); err != nil {
+		return 0, err
 	}
 
 	if err := tx.Commit(); err != nil {
