@@ -40,22 +40,20 @@ const reactionsSchema = `
 // on every startup. Fresh stores already have the columns from their CREATE
 // TABLE in NewMessageStore, so ALTER only fires for the ones that are missing.
 func migrateMutations(db *sql.DB) error {
-	rows, err := db.Query("PRAGMA table_info(messages)")
+	rows, err := db.Query("SELECT name FROM pragma_table_info('messages')")
 	if err != nil {
 		return fmt.Errorf("reading messages schema: %w", err)
 	}
+	defer rows.Close()
 	have := map[string]bool{}
 	for rows.Next() {
-		var cid, notNull, pk int
-		var name, colType string
-		var dflt sql.NullString
-		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
-			rows.Close()
+		var name string
+		if err := rows.Scan(&name); err != nil {
 			return fmt.Errorf("scanning messages schema: %w", err)
 		}
 		have[name] = true
 	}
-	if err := rows.Close(); err != nil {
+	if err := rows.Err(); err != nil {
 		return err
 	}
 	for _, col := range []string{"edited_at", "deleted_at"} {
@@ -70,12 +68,6 @@ func migrateMutations(db *sql.DB) error {
 		return fmt.Errorf("creating reactions table: %w", err)
 	}
 	return nil
-}
-
-// mayEdit reports whether an edit from editor may be applied to a message
-// stored under storedSender. Only the author can edit, and never to nothing.
-func mayEdit(editor, storedSender, newText string) bool {
-	return newText != "" && editor != "" && editor == storedSender
 }
 
 // adminCheck reports whether a revoker is currently an admin of the group the
@@ -103,25 +95,17 @@ func withinEditWindow(sentAt, now time.Time) bool {
 	return now.Sub(sentAt) <= editWindow
 }
 
-// ApplyEdit rewrites a stored message's text. It is a no-op (false, nil) when
-// the message is unknown, already deleted, or the editor is not its author.
+// ApplyEdit rewrites a stored message's text. Only the author can edit, and
+// never to nothing: it is a no-op (false, nil) when the message is unknown,
+// already deleted, or the editor is not its stored sender.
 func (store *MessageStore) ApplyEdit(chatJID, id, editor, newText string, at time.Time) (bool, error) {
-	var sender string
-	err := store.db.QueryRow(
-		"SELECT sender FROM messages WHERE id = ? AND chat_jid = ? AND deleted_at IS NULL", id, chatJID,
-	).Scan(&sender)
-	if err == sql.ErrNoRows {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if !mayEdit(editor, sender, newText) {
+	if newText == "" || editor == "" {
 		return false, nil
 	}
 	res, err := store.db.Exec(
-		"UPDATE messages SET content = ?, edited_at = ? WHERE id = ? AND chat_jid = ? AND deleted_at IS NULL",
-		newText, at, id, chatJID,
+		`UPDATE messages SET content = ?, edited_at = ?
+		 WHERE id = ? AND chat_jid = ? AND sender = ? AND deleted_at IS NULL`,
+		newText, at, id, chatJID, editor,
 	)
 	if err != nil {
 		return false, err
@@ -135,14 +119,10 @@ func (store *MessageStore) ApplyEdit(chatJID, id, editor, newText string, at tim
 // No-op (false, nil) when the message is unknown, already deleted, or the
 // revoker is not allowed to delete it.
 func (store *MessageStore) ApplyRevoke(chatJID, id, revoker string, isAdmin adminCheck, at time.Time) (bool, error) {
-	tx, err := store.db.Begin()
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
-
+	// Decide before opening the transaction: isAdmin may be a network round
+	// trip, and a transaction held across it would block other writers.
 	var sender string
-	err = tx.QueryRow(
+	err := store.db.QueryRow(
 		"SELECT sender FROM messages WHERE id = ? AND chat_jid = ? AND deleted_at IS NULL", id, chatJID,
 	).Scan(&sender)
 	if err == sql.ErrNoRows {
@@ -154,12 +134,22 @@ func (store *MessageStore) ApplyRevoke(chatJID, id, revoker string, isAdmin admi
 	if !mayRevoke(chatJID, revoker, sender, isAdmin) {
 		return false, nil
 	}
-	if _, err := tx.Exec(
+
+	tx, err := store.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(
 		`UPDATE messages SET content = '', deleted_at = ?, url = NULL, media_key = NULL,
 			file_sha256 = NULL, file_enc_sha256 = NULL, file_length = NULL
-		 WHERE id = ? AND chat_jid = ?`, at, id, chatJID,
-	); err != nil {
+		 WHERE id = ? AND chat_jid = ? AND deleted_at IS NULL`, at, id, chatJID,
+	)
+	if err != nil {
 		return false, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return false, nil
 	}
 	if _, err := tx.Exec("DELETE FROM reactions WHERE message_id = ? AND chat_jid = ?", id, chatJID); err != nil {
 		return false, err
@@ -202,7 +192,6 @@ type StoredMessage struct {
 
 // GetStoredMessage looks up a message by id and chat key; sql.ErrNoRows if absent.
 func (store *MessageStore) GetStoredMessage(ctx context.Context, id, chatJID string) (StoredMessage, error) {
-	var m StoredMessage
 	var sender, content, mediaType sql.NullString
 	var ts, deletedAt sql.NullTime
 	var fromMe sql.NullBool
@@ -210,12 +199,8 @@ func (store *MessageStore) GetStoredMessage(ctx context.Context, id, chatJID str
 		`SELECT sender, content, media_type, is_from_me, timestamp, deleted_at
 		 FROM messages WHERE id = ? AND chat_jid = ?`, id, chatJID,
 	).Scan(&sender, &content, &mediaType, &fromMe, &ts, &deletedAt)
-	if err != nil {
-		return m, err
-	}
-	m = StoredMessage{
+	return StoredMessage{
 		Sender: sender.String, Content: content.String, MediaType: mediaType.String,
 		IsFromMe: fromMe.Bool, Time: ts.Time, Deleted: deletedAt.Valid,
-	}
-	return m, nil
+	}, err
 }

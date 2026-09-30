@@ -194,6 +194,10 @@ func canonicalizeMessageStore(ctx context.Context, db *sql.DB, lids lidMapper, o
 		`CREATE TABLE IF NOT EXISTS jid_aliases (old_jid TEXT PRIMARY KEY, new_jid TEXT NOT NULL)`); err != nil {
 		return 0, err
 	}
+	// Reactions follow every chat-key and sender rewrite below.
+	if _, err := tx.ExecContext(ctx, reactionsSchema); err != nil {
+		return 0, err
+	}
 
 	// mergeChatKey folds the chat row and messages under oldKey into newKey,
 	// leaving an alias behind. The same message id can exist under both keys
@@ -229,7 +233,7 @@ func canonicalizeMessageStore(ctx context.Context, db *sql.DB, lids lidMapper, o
 		if err := count(tx.ExecContext(ctx, `DELETE FROM messages WHERE chat_jid = ?`, oldKey)); err != nil {
 			return err
 		}
-		if err := moveReactionsChatKey(ctx, tx, oldKey, newKey); err != nil {
+		if err := moveColumnValue(ctx, tx, "chat_jid", oldKey, newKey); err != nil {
 			return err
 		}
 		return count(tx.ExecContext(ctx, `DELETE FROM chats WHERE jid = ?`, oldKey))
@@ -317,21 +321,12 @@ func canonicalizeMessageStore(ctx context.Context, db *sql.DB, lids lidMapper, o
 		return 0, err
 	}
 	for _, stored := range fullSenders {
-		jid, err := types.ParseJID(stored)
-		if err != nil {
-			continue
-		}
-		canonical := normalizeLegacyServer(jid.ToNonAD())
-		if canonical.Server == types.HiddenUserServer {
-			if pn, err := lids.GetPNForLID(ctx, canonical); err == nil && !pn.IsEmpty() {
-				canonical = pn.ToNonAD()
-			}
-		}
-		if canonical.String() == stored {
+		canonical, ok := canonicalStoredSender(ctx, lids, stored)
+		if !ok {
 			continue
 		}
 		if err := count(tx.ExecContext(ctx,
-			`UPDATE messages SET sender = ? WHERE sender = ?`, canonical.String(), stored)); err != nil {
+			`UPDATE messages SET sender = ? WHERE sender = ?`, canonical, stored)); err != nil {
 			return 0, err
 		}
 	}
@@ -345,6 +340,17 @@ func canonicalizeMessageStore(ctx context.Context, db *sql.DB, lids lidMapper, o
 		return 0, err
 	}
 	return changed, nil
+}
+
+// canonicalStoredSender returns the canonical spelling of a stored full-JID
+// sender, and false when it is unparseable or already canonical.
+func canonicalStoredSender(ctx context.Context, lids lidMapper, stored string) (string, bool) {
+	jid, err := types.ParseJID(stored)
+	if err != nil || jid.User == "" {
+		return "", false
+	}
+	canonical := canonicalContactJID(ctx, lids, jid).String()
+	return canonical, canonical != stored
 }
 
 func collectColumn(tx *sql.Tx, query string) ([]string, error) {

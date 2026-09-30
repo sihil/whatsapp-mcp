@@ -497,6 +497,15 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	chatJID := canonicalChat.String()
 	sender := canonicalSenderJID(ctx, client.Store.LIDs, msg.Info.Sender, msg.Info.SenderAlt, client.Store.GetJID(), msg.Info.IsFromMe)
 
+	// Every incoming stanza carries the sender's self-chosen display name. For
+	// a group participant who is not in the address book it is the only name
+	// available, so record it against the canonical sender JID.
+	if !msg.Info.IsFromMe && msg.Info.PushName != "" {
+		if err := messageStore.StorePushName(sender, msg.Info.PushName); err != nil {
+			logger.Warnf("Failed to store push name for %s: %v", sender, err)
+		}
+	}
+
 	// Reactions, edits and revokes update existing rows; they are not messages
 	// and must not bump the chat's last message time (see mutation_events.go).
 	if handleMutationEvent(client, messageStore, msg, chatJID, sender, logger) {
@@ -512,15 +521,6 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	err := messageStore.StoreChat(chatJID, name, msg.Info.Timestamp)
 	if err != nil {
 		logger.Warnf("Failed to store chat: %v", err)
-	}
-
-	// Every incoming stanza carries the sender's self-chosen display name. For
-	// a group participant who is not in the address book it is the only name
-	// available, so record it against the canonical sender JID.
-	if !msg.Info.IsFromMe && msg.Info.PushName != "" {
-		if err := messageStore.StorePushName(sender, msg.Info.PushName); err != nil {
-			logger.Warnf("Failed to store push name for %s: %v", sender, err)
-		}
 	}
 
 	// Extract text content

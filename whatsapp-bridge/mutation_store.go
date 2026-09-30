@@ -32,18 +32,9 @@ func recordSentMessage(ctx context.Context, lids lidMapper, store *MessageStore,
 		mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength)
 }
 
-// hasReactionsTable reports whether the store has a reactions table yet (a
-// store last written by an older bridge, or a test schema, may not).
-func hasReactionsTable(ctx context.Context, tx *sql.Tx) (bool, error) {
-	var n int
-	err := tx.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'reactions'").Scan(&n)
-	return n > 0, err
-}
-
 // moveColumnValue rewrites reactions.<column> from oldVal to newVal. A row
 // already present under newVal wins, like the message rows it belongs to.
-// column is one of the two constants below, never caller input.
+// column is "chat_jid" or "sender", never caller input.
 func moveColumnValue(ctx context.Context, tx *sql.Tx, column, oldVal, newVal string) error {
 	if _, err := tx.ExecContext(ctx,
 		"UPDATE OR IGNORE reactions SET "+column+" = ? WHERE "+column+" = ?", newVal, oldVal); err != nil {
@@ -53,41 +44,20 @@ func moveColumnValue(ctx context.Context, tx *sql.Tx, column, oldVal, newVal str
 	return err
 }
 
-// moveReactionsChatKey follows a chat-key rename made by
-// canonicalizeMessageStore, so reactions stay attached to their messages.
-func moveReactionsChatKey(ctx context.Context, tx *sql.Tx, oldKey, newKey string) error {
-	if ok, err := hasReactionsTable(ctx, tx); err != nil || !ok {
-		return err
-	}
-	return moveColumnValue(ctx, tx, "chat_jid", oldKey, newKey)
-}
-
 // canonicalizeReactionSenders applies the same sender rule as messages.sender
 // to reactors: no device part, modern PN server, PN instead of @lid once the
 // mapping is known.
 func canonicalizeReactionSenders(ctx context.Context, tx *sql.Tx, lids lidMapper) error {
-	if ok, err := hasReactionsTable(ctx, tx); err != nil || !ok {
-		return err
-	}
 	senders, err := collectColumn(tx, `SELECT DISTINCT sender FROM reactions`)
 	if err != nil {
 		return err
 	}
 	for _, stored := range senders {
-		jid, err := types.ParseJID(stored)
-		if err != nil || jid.User == "" {
+		canonical, ok := canonicalStoredSender(ctx, lids, stored)
+		if !ok {
 			continue
 		}
-		canonical := normalizeLegacyServer(jid.ToNonAD())
-		if canonical.Server == types.HiddenUserServer {
-			if pn, err := lids.GetPNForLID(ctx, canonical); err == nil && !pn.IsEmpty() {
-				canonical = pn.ToNonAD()
-			}
-		}
-		if canonical.String() == stored {
-			continue
-		}
-		if err := moveColumnValue(ctx, tx, "sender", stored, canonical.String()); err != nil {
+		if err := moveColumnValue(ctx, tx, "sender", stored, canonical); err != nil {
 			return err
 		}
 	}

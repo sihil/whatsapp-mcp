@@ -85,11 +85,6 @@ func handleMutationEvent(client *whatsmeow.Client, store *MessageStore, msg *eve
 		logger.Warnf("Ignoring mutation with no target message from %s", sender)
 		return true
 	}
-	if !msg.Info.IsFromMe && msg.Info.PushName != "" {
-		if err := store.StorePushName(sender, msg.Info.PushName); err != nil {
-			logger.Warnf("Failed to store push name for %s: %v", sender, err)
-		}
-	}
 	at := mu.at
 	if at.IsZero() {
 		at = msg.Info.Timestamp
