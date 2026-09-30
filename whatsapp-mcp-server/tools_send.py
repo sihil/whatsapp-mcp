@@ -188,8 +188,9 @@ def delete_message(
     message_id: Annotated[str, Field(description=_MESSAGE_ID_DESC)],
 ) -> Dict[str, Any]:
     """Delete a message you sent, for everyone in the chat ("delete for
-    everyone"). This cannot be undone. Afterwards the message still appears in
-    listings as deleted, with empty content. Returns a dict with success status
-    and a status message. Raises on failure (message not found or not yours,
+    everyone"), only within 2 days 12 hours of sending (WhatsApp's limit). This
+    cannot be undone. Afterwards the message still appears in listings as
+    deleted, with empty content. Returns a dict with success status and a status
+    message. Raises on failure (message not found, not yours or too old,
     unreachable bridge, or a rejected send)."""
     return _result(whatsapp_delete_message(chat_jid, message_id))

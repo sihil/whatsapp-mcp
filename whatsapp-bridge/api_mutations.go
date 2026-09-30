@@ -57,12 +57,14 @@ func checkEditable(m StoredMessage, newText string, now time.Time) string {
 }
 
 // checkDeletable returns why m cannot be deleted for everyone, or "" when it can.
-func checkDeletable(m StoredMessage) string {
+func checkDeletable(m StoredMessage, now time.Time) string {
 	switch {
 	case !m.IsFromMe:
 		return "Only your own messages can be deleted"
 	case m.Deleted:
 		return "Message is already deleted"
+	case !withinDeleteWindow(m.Time, now):
+		return "Message is older than 2 days 12 hours and can no longer be deleted for everyone"
 	}
 	return ""
 }
@@ -145,13 +147,14 @@ func deleteMessage(client *whatsmeow.Client, store *MessageStore, req DeleteRequ
 	if status != 0 {
 		return status, msg
 	}
-	if why := checkDeletable(m); why != "" {
+	now := time.Now()
+	if why := checkDeletable(m, now); why != "" {
 		return http.StatusBadRequest, why
 	}
 	if _, err := client.SendMessage(context.Background(), chat, client.BuildRevoke(chat, types.EmptyJID, req.MessageID)); err != nil {
 		return http.StatusInternalServerError, fmt.Sprintf("Error sending delete: %v", err)
 	}
-	if applied, err := store.ApplyRevoke(chat.String(), req.MessageID, m.Sender, nil, time.Now()); err != nil || !applied {
+	if applied, err := store.ApplyRevoke(chat.String(), req.MessageID, m.Sender, nil, now); err != nil || !applied {
 		fmt.Printf("Delete of %s was sent but not stored (applied=%v): %v\n", req.MessageID, applied, err)
 	}
 	return 0, "Message deleted"

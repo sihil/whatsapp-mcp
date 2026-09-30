@@ -237,9 +237,13 @@ func TestCheckEditableAndDeletable(t *testing.T) {
 			t.Errorf("checkEditable %s = %v, want %v", c.name, got, c.ok)
 		}
 	}
-	if checkDeletable(ok) != "" || checkDeletable(StoredMessage{}) == "" ||
-		checkDeletable(StoredMessage{IsFromMe: true, Deleted: true}) == "" {
+	del := func(m StoredMessage, now time.Time) bool { return checkDeletable(m, now) == "" }
+	if !del(ok, now) || del(StoredMessage{Time: t0}, now) ||
+		del(StoredMessage{IsFromMe: true, Time: t0, Deleted: true}, now) {
 		t.Error("checkDeletable wrong")
+	}
+	if !del(ok, t0.Add(deleteWindow)) || del(ok, t0.Add(deleteWindow+time.Hour)) {
+		t.Error("checkDeletable ignores the 60-hour delete-for-everyone window")
 	}
 }
 

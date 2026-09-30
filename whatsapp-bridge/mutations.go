@@ -25,6 +25,11 @@ import (
 // editWindow is how long after sending WhatsApp still allows an edit.
 const editWindow = 15 * time.Minute
 
+// deleteWindow is how long after sending WhatsApp still honours a "delete for
+// everyone" (2 days 12 hours). Recipients ignore a later revoke, so sending
+// one would only erase the message from this store.
+const deleteWindow = 60 * time.Hour
+
 const reactionsSchema = `
 	CREATE TABLE IF NOT EXISTS reactions (
 		message_id TEXT NOT NULL,
@@ -93,6 +98,12 @@ func mayRevoke(chatJID, revoker, storedSender string, isAdmin adminCheck) bool {
 // withinEditWindow reports whether a message sent at sentAt can still be edited.
 func withinEditWindow(sentAt, now time.Time) bool {
 	return now.Sub(sentAt) <= editWindow
+}
+
+// withinDeleteWindow reports whether a message sent at sentAt can still be
+// deleted for everyone.
+func withinDeleteWindow(sentAt, now time.Time) bool {
+	return now.Sub(sentAt) <= deleteWindow
 }
 
 // ApplyEdit rewrites a stored message's text. Only the author can edit, and
