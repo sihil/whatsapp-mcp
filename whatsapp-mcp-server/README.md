@@ -129,11 +129,13 @@ render as a playable voice message).
 
 - `main.py` — entrypoint; imports `server` and the tool modules, runs the
   stdio transport.
-- `server.py` — the shared `MCPServer` instance.
+- `server.py` — the shared `MCPServer` instance and the `tool` decorator, which
+  turns the `PermissionError`/`ValueError`/`RuntimeError` a tool raises on
+  purpose into a `ToolError` so the model sees the reason.
 - `access_control.py` — loads the allowlist; `read_filter` for SQL,
   `check_readable`/`check_writable` for single chats and bridge calls.
 - `config.py` — env var reads, logging setup.
-- `tools_read.py` / `tools_send.py` — the `@mcp.tool()` wrappers.
+- `tools_read.py` / `tools_send.py` — the `@tool()` wrappers.
 - `models.py` — dataclasses for messages/chats/contacts.
 - `db.py`, `db_names.py`, `db_chats.py`, `db_contacts.py`, `db_messages.py` —
   SQLite read layer. `db_names.py` owns every SQL fragment that turns stored
