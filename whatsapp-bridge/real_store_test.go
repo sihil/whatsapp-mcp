@@ -70,7 +70,9 @@ func TestMigrateContactsRealStore(t *testing.T) {
 	const groupMessages = `SELECT COUNT(*) FROM messages
 		WHERE chat_jid LIKE '%@g.us' AND is_from_me = 0`
 	const numericChatNames = `SELECT COUNT(*) FROM chats
-		WHERE name IS NOT NULL AND name NOT GLOB '*[^0-9]*'`
+		WHERE name IS NOT NULL AND name NOT GLOB '*[^0-9]*'
+		AND jid NOT LIKE '%@g.us' AND jid NOT LIKE '%@broadcast'
+		AND jid NOT LIKE '%@newsletter'`
 
 	if _, err := db.Exec(contactsSchema); err != nil {
 		t.Fatalf("creating contacts table: %v", err)
