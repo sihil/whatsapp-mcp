@@ -198,6 +198,9 @@ func canonicalizeMessageStore(ctx context.Context, db *sql.DB, lids lidMapper, o
 	if _, err := tx.ExecContext(ctx, reactionsSchema); err != nil {
 		return 0, err
 	}
+	if _, err := tx.ExecContext(ctx, groupEventsSchema); err != nil {
+		return 0, err
+	}
 
 	merge := func(oldKey, newKey string) error {
 		n, err := mergeChatKey(ctx, tx, oldKey, newKey)
@@ -299,6 +302,11 @@ func canonicalizeMessageStore(ctx context.Context, db *sql.DB, lids lidMapper, o
 
 	// 6. Reactors follow the same sender rule (see mutation_store.go).
 	if err := canonicalizeReactionSenders(ctx, tx, lids); err != nil {
+		return 0, err
+	}
+
+	// 7. So do the people named in membership changes.
+	if err := canonicalizeGroupEvents(ctx, tx, lids); err != nil {
 		return 0, err
 	}
 
