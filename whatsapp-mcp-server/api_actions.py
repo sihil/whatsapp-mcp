@@ -6,6 +6,7 @@ communication failures come back as a (False, message) tuple.
 """
 from typing import Tuple
 
+import access_control
 from api_client import post_limited
 
 # Small JSON round trips, unlike a media upload.
@@ -16,6 +17,7 @@ def _require(**fields: str) -> None:
     for name, value in fields.items():
         if not value:
             raise ValueError(f"{name.replace('_', ' ').capitalize()} must be provided")
+    access_control.check_writable(fields["chat_jid"])
 
 
 def send_reaction(chat_jid: str, message_id: str, emoji: str) -> Tuple[bool, str]:

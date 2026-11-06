@@ -70,11 +70,16 @@ Here's an example of what you can do when it's connected to Claude.
            "{{PATH_TO_SRC}}/whatsapp-mcp/whatsapp-mcp-server", // cd into the repo, run `pwd` and enter the output here + "/whatsapp-mcp-server"
            "run",
            "main.py"
-         ]
+         ],
+         "env": {
+           "WHATSAPP_MCP_ALLOWLIST": "{{PATH_TO_ALLOWLIST}}" // JSON file listing the chats this server may read and send to
+         }
        }
      }
    }
    ```
+
+   The server refuses to start without `WHATSAPP_MCP_ALLOWLIST`. Copy `whatsapp-mcp-server/allowlist.example.json` somewhere outside the repo (e.g. `~/.config/whatsapp-mcp/`) and list the chats this client may see; see `whatsapp-mcp-server/README.md` for the format.
 
    For **Claude**, save this as `claude_desktop_config.json` in your Claude Desktop configuration directory at:
 

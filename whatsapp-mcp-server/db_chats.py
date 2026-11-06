@@ -2,6 +2,7 @@
 live in db_contacts.py, which builds on the query helpers here."""
 from typing import Any, Dict, List, Optional
 
+import access_control
 from db import (
     canonical_jid,
     chat_from_row,
@@ -95,15 +96,15 @@ def list_chats(
     conn = connect()
     try:
         cursor = conn.cursor()
-        where = ""
-        params: List[Any] = []
+        allowed, params = access_control.read_filter(cursor, "c.jid")
+        where = f"WHERE {allowed}"
 
         with_contacts = contacts_available(cursor)
         name_expr = chat_name_expr(with_contacts)
         if query:
             escaped_query = escape_like(query)
-            where = (
-                f"WHERE (LOWER({name_expr}) LIKE LOWER(?) ESCAPE '\\' "
+            where += (
+                f" AND (LOWER({name_expr}) LIKE LOWER(?) ESCAPE '\\' "
                 "OR c.jid LIKE ? ESCAPE '\\')"
             )
             params.extend([f"%{escaped_query}%", f"%{escaped_query}%"])
@@ -134,6 +135,7 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]
     try:
         cursor = conn.cursor()
         resolved_jid = resolve_chat_jid(cursor, canonical_jid(chat_jid))
+        access_control.check_readable(resolved_jid, cursor)
         cursor.execute(
             chat_query(contacts_available(cursor), include_last_message, "WHERE c.jid = ?"),
             (resolved_jid,),

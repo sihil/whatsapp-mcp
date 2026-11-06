@@ -17,6 +17,7 @@ from typing import Any, Deque, Dict, Optional, Tuple
 
 import requests
 
+import access_control
 import audio
 from config import BRIDGE_DOWN_HINT, allowed_media_dirs, api_base_url, send_rate_limit
 
@@ -148,6 +149,7 @@ def _post_send(payload: Dict[str, str]) -> Tuple[bool, str]:
 def send_message(recipient: str, message: str, reply_to: Optional[str] = None) -> Tuple[bool, str]:
     if not recipient:
         raise ValueError("Recipient must be provided")
+    access_control.check_writable(recipient)
 
     payload = {
         "recipient": recipient,
@@ -163,6 +165,7 @@ def send_file(recipient: str, media_path: str, reply_to: Optional[str] = None) -
         raise ValueError("Recipient must be provided")
     if not media_path:
         raise ValueError("Media path must be provided")
+    access_control.check_writable(recipient)
 
     validated_path = _validate_media_path(media_path)
     payload = {
@@ -179,6 +182,7 @@ def send_audio_message(recipient: str, media_path: str, reply_to: Optional[str] 
         raise ValueError("Recipient must be provided")
     if not media_path:
         raise ValueError("Media path must be provided")
+    access_control.check_writable(recipient)
 
     validated_path = _validate_media_path(media_path)
 
@@ -221,6 +225,7 @@ def download_media(message_id: str, chat_jid: str) -> Tuple[Optional[str], str]:
         failure; message always carries the bridge's (or transport-layer)
         status text.
     """
+    access_control.check_readable(chat_jid)
     body, error = _post(
         "/download", {"message_id": message_id, "chat_jid": chat_jid}, timeout=(5, 120)
     )
@@ -248,6 +253,7 @@ def get_group_members(group_jid: str) -> dict:
     Returns:
         A dictionary containing success status, group name, member count, and list of members
     """
+    access_control.check_readable(group_jid)
     body, error = _post("/group/members", {"group_jid": group_jid}, timeout=(5, 30))
     if body is None:
         return {"success": False, "message": error, "members": [], "member_count": 0}
