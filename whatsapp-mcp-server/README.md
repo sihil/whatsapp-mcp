@@ -92,7 +92,8 @@ either scope is missing.
   (`…@s.whatsapp.net` or `…@lid`) or a group JID (`…@g.us`). `name` is for
   whoever maintains the file and plays no part in the checks.
 - `allowRead` covers every read tool, `download_media` and
-  `list_group_members`. Unlisted chats are filtered out of listings and
+  `list_group_members`; it also scopes `list_reactions` and
+  `list_group_events`. Unlisted chats are filtered out of listings and
   searches; naming one explicitly raises an error.
 - `allowWrite` covers `send_message`, `send_file`, `send_audio_message`,
   `send_reaction`, `edit_message` and `delete_message`. `[]` makes the
@@ -146,6 +147,8 @@ render as a playable voice message).
   rate limiting, media-path validation.
 - `api_actions.py` — react/edit/delete calls, on api_client's limiter and transport.
 - `db_reactions.py` — bulk fetch of a page's reactions.
+- `db_activity.py` — reactions listed by when they were made, and group
+  membership changes.
 - `whatsapp.py` — thin façade re-exporting the public functions for backward
   compatible imports.
 - `audio.py` — FFmpeg conversion helper.

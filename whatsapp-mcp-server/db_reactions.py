@@ -17,7 +17,7 @@ def _reactions_available(cursor: sqlite3.Cursor) -> bool:
     return cursor.fetchone() is not None
 
 
-def _own_jid(cursor: sqlite3.Cursor) -> Optional[str]:
+def own_jid(cursor: sqlite3.Cursor) -> Optional[str]:
     """The account's own JID: the bridge stores own PN JID as the sender of
     every is_from_me row, and own reactions use the same spelling. The store
     records the own JID nowhere else, so with no own message yet (a store
@@ -62,7 +62,7 @@ def attach_reactions(
 
     own = next(
         (m.sender for group in by_key.values() for m in group if m.is_from_me), None
-    ) or _own_jid(cursor)
+    ) or own_jid(cursor)
     senders = [s for pairs in found.values() for s, _ in pairs if s != own]
     names = resolve_sender_names(cursor, senders, name_cache)
     for key, pairs in found.items():
