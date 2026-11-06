@@ -72,12 +72,16 @@ func mergeChatKey(ctx context.Context, tx *sql.Tx, oldKey, newKey string) (int, 
 }
 
 // mergeLID moves everything stored under lid to pn: the messages and
-// reactions sent under it, and a DM chat keyed by it.
+// reactions sent under it, the membership changes naming it, and a DM chat
+// keyed by it.
 func mergeLID(ctx context.Context, tx *sql.Tx, lid, pn string) error {
 	if _, err := tx.ExecContext(ctx, `UPDATE messages SET sender = ? WHERE sender = ?`, pn, lid); err != nil {
 		return err
 	}
 	if err := moveColumnValue(ctx, tx, "sender", lid, pn); err != nil {
+		return err
+	}
+	if err := moveGroupEventIdentity(ctx, tx, lid, pn); err != nil {
 		return err
 	}
 	var chats int

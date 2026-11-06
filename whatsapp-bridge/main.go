@@ -98,7 +98,7 @@ func NewMessageStore() (*MessageStore, error) {
 			old_jid TEXT PRIMARY KEY,
 			new_jid TEXT NOT NULL
 		);
-	` + contactsSchema + ";" + senderIndexSchema + ";")
+	` + contactsSchema + ";" + senderIndexSchema + ";" + groupEventsSchema + ";")
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to create tables: %v", err)
@@ -1246,6 +1246,11 @@ func main() {
 			// Process history sync events
 			handleHistorySync(client, messageStore, v, logger)
 
+		case *events.GroupInfo:
+			if err := messageStore.StoreGroupEvents(groupEventsFromInfo(context.Background(), client.Store.LIDs, v)); err != nil {
+				logger.Warnf("Failed to store membership changes in %s: %v", v.JID, err)
+			}
+
 		case *events.Connected:
 			logger.Infof("Connected to WhatsApp")
 
@@ -1522,6 +1527,12 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 				// A REVOKE stub is a deleted message and has nothing to store
 				// (see mutation_events.go).
 				if applyHistoryRevoke(context.Background(), client.Store.LIDs, messageStore, msg.Message, jid, ownJID, pnMap, logger) {
+					continue
+				}
+				if changes, ok := groupEventsFromHistory(context.Background(), client.Store.LIDs, msg.Message, jid, ownJID, pnMap); ok {
+					if err := messageStore.StoreGroupEvents(changes); err != nil {
+						logger.Warnf("Failed to store history membership changes in %s: %v", chatJID, err)
+					}
 					continue
 				}
 
