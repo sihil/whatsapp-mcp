@@ -41,6 +41,17 @@ _SCHEMA = """
         jid TEXT PRIMARY KEY, full_name TEXT NOT NULL DEFAULT '',
         push_name TEXT NOT NULL DEFAULT '', business_name TEXT NOT NULL DEFAULT ''
     );
+    CREATE TABLE reactions (
+        message_id TEXT NOT NULL, chat_jid TEXT NOT NULL, sender TEXT NOT NULL,
+        emoji TEXT NOT NULL, timestamp TIMESTAMP,
+        PRIMARY KEY (message_id, chat_jid, sender)
+    );
+    CREATE TABLE group_events (
+        chat_jid TEXT NOT NULL, kind TEXT NOT NULL, participant TEXT NOT NULL,
+        actor TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
+        timestamp TIMESTAMP NOT NULL,
+        PRIMARY KEY (chat_jid, kind, participant, timestamp)
+    );
 """
 
 _CHATS = [
@@ -58,6 +69,21 @@ _MESSAGES = [
 ]
 
 
+# A blank emoji is the bridge's marker for a removed reaction.
+_REACTIONS = [
+    ("g1", GROUP, STRANGER, "👍", "2026-11-05 09:00:00+00:00"),
+    ("f1", FRIEND, FRIEND, "❤️", "2026-11-05 10:00:00+00:00"),
+    ("s1", OTHER_GROUP, FRIEND, "😂", "2026-11-05 11:00:00+00:00"),
+    ("g1", GROUP, FRIEND, "", "2026-11-05 12:00:00+00:00"),
+]
+
+_GROUP_EVENTS = [
+    (GROUP, "join", STRANGER, FRIEND, "added", "2026-11-05 08:00:00+00:00"),
+    (GROUP, "leave", FRIEND, FRIEND, "left", "2026-11-06 08:00:00+00:00"),
+    (OTHER_GROUP, "join", FRIEND, "", "invite", "2026-11-06 09:00:00+00:00"),
+]
+
+
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     path = tmp_path / "messages.db"
@@ -70,6 +96,8 @@ def store(tmp_path, monkeypatch):
         _MESSAGES,
     )
     conn.execute("INSERT INTO jid_aliases VALUES (?, ?)", (FRIEND_LID, FRIEND))
+    conn.executemany("INSERT INTO reactions VALUES (?, ?, ?, ?, ?)", _REACTIONS)
+    conn.executemany("INSERT INTO group_events VALUES (?, ?, ?, ?, ?, ?)", _GROUP_EVENTS)
     conn.executemany(
         "INSERT INTO contacts (jid, full_name) VALUES (?, ?)",
         [(FRIEND, "Friend Person"), (STRANGER, "Stranger Person")],

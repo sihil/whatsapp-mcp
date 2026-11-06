@@ -13,7 +13,9 @@ from whatsapp import (
     get_last_interaction as whatsapp_get_last_interaction,
     get_message_context as whatsapp_get_message_context,
     list_chats as whatsapp_list_chats,
+    list_group_events as whatsapp_list_group_events,
     list_messages as whatsapp_list_messages,
+    list_reactions as whatsapp_list_reactions,
     search_contacts as whatsapp_search_contacts,
 )
 
@@ -185,3 +187,55 @@ def get_message_context(
     messages have empty content) and reactions. Errors when the message is not
     found."""
     return whatsapp_get_message_context(message_id, before, after, chat_jid)
+
+
+@tool(title="List Reactions", annotations=_READ_ONLY)
+def list_reactions(
+    chat_jid: Annotated[
+        Optional[str], Field(description="Only reactions in this chat")
+    ] = None,
+    after: Annotated[
+        Optional[str], Field(description="Only reactions made after this ISO-8601 date")
+    ] = None,
+    before: Annotated[
+        Optional[str], Field(description="Only reactions made before this ISO-8601 date")
+    ] = None,
+    limit: Annotated[
+        int, Field(description="Maximum number of reactions to return", ge=1, le=100)
+    ] = 20,
+    page: Annotated[int, Field(description="Page number for pagination", ge=0)] = 0,
+) -> List[Dict[str, Any]]:
+    """Get WhatsApp emoji reactions newest first, by when the reaction was
+    made, so a new reaction on an old message shows up. Each item is {emoji,
+    sender, sender_name, is_from_me, timestamp, chat_jid, chat_name, message},
+    where message is the reacted-to message dict ({"id"} only when the bridge
+    never stored it). Removed reactions are not listed. Only reactions received
+    since the bridge began recording them are known."""
+    return whatsapp_list_reactions(chat_jid, after, before, limit, page)
+
+
+@tool(title="List Group Membership Changes", annotations=_READ_ONLY)
+def list_group_events(
+    chat_jid: Annotated[
+        Optional[str], Field(description="Only changes in this group (JID ending @g.us)")
+    ] = None,
+    after: Annotated[
+        Optional[str], Field(description="Only changes after this ISO-8601 date")
+    ] = None,
+    before: Annotated[
+        Optional[str], Field(description="Only changes before this ISO-8601 date")
+    ] = None,
+    limit: Annotated[
+        int, Field(description="Maximum number of changes to return", ge=1, le=200)
+    ] = 50,
+    page: Annotated[int, Field(description="Page number for pagination", ge=0)] = 0,
+) -> List[Dict[str, Any]]:
+    """Get WhatsApp group membership changes newest first: people joining,
+    leaving, and being promoted to or demoted from admin. Each item is
+    {chat_jid, chat_name, kind (join, leave, promote, demote), participant,
+    participant_name, actor, actor_name, reason, timestamp}. actor is who made
+    the change, null when unknown; reason is added, invite, request or
+    community for a join and left or removed for a leave, null when unknown.
+    Only changes since the bridge began recording them are known; use
+    list_group_members for the current roster."""
+    return whatsapp_list_group_events(chat_jid, after, before, limit, page)
