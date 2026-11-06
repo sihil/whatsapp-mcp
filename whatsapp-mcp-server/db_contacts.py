@@ -1,6 +1,7 @@
 """Contact-oriented queries: finding people, and the chats they appear in."""
 from typing import Any, Dict, List
 
+import access_control
 from db import (
     alias_candidates,
     canonical_jid,
@@ -53,6 +54,7 @@ def search_contacts(query: str, limit: int = 50) -> List[Dict[str, Any]]:
         #
         # The JID match is against the user part only. Matching the whole JID
         # searches the server too, so "net" matched every contact the user has.
+        allowed, allowed_params = access_control.read_filter(cursor, "jid")
         cursor.execute(f"""
             SELECT jid, name FROM (
                 SELECT cand.jid AS jid, {chat_name_expr(with_contacts, "ch")} AS name,
@@ -61,11 +63,12 @@ def search_contacts(query: str, limit: int = 50) -> List[Dict[str, Any]]:
                 LEFT JOIN chats ch ON ch.jid = cand.jid
                 {contacts_join(with_contacts, "cand")}
             )
-            WHERE LOWER(name) LIKE LOWER(?) ESCAPE '\\'
-               OR substr(jid, 1, instr(jid, '@') - 1) LIKE ? ESCAPE '\\'
+            WHERE (LOWER(name) LIKE LOWER(?) ESCAPE '\\'
+               OR substr(jid, 1, instr(jid, '@') - 1) LIKE ? ESCAPE '\\')
+              AND {allowed}
             ORDER BY no_chat, (name IS NULL), name, jid
             LIMIT ?
-        """, (search_pattern, search_pattern, limit))
+        """, (search_pattern, search_pattern, *allowed_params, limit))
 
         return [
             Contact(phone_number=row[0].split('@')[0], name=row[1], jid=row[0]).to_dict()
@@ -88,15 +91,17 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Dict[str
         cursor = conn.cursor()
         candidates = alias_candidates(cursor, canonical_jid(jid))
         slots = placeholders(candidates)
+        allowed, allowed_params = access_control.read_filter(cursor, "c.jid")
         cursor.execute(
             chat_query(
                 contacts_available(cursor),
                 True,
-                f"WHERE c.jid IN ({slots}) "
-                f"OR c.jid IN (SELECT chat_jid FROM messages WHERE sender IN ({slots}))",
+                f"WHERE (c.jid IN ({slots}) "
+                f"OR c.jid IN (SELECT chat_jid FROM messages WHERE sender IN ({slots}))) "
+                f"AND {allowed}",
                 "ORDER BY c.last_message_time DESC LIMIT ? OFFSET ?",
             ),
-            tuple(candidates) * 2 + (limit, page * limit),
+            tuple(candidates) * 2 + tuple(allowed_params) + (limit, page * limit),
         )
 
         return [chat_from_row(row).to_dict() for row in cursor.fetchall()]
@@ -111,12 +116,14 @@ def get_last_interaction(jid: str) -> str:
         cursor = conn.cursor()
         candidates = alias_candidates(cursor, canonical_jid(jid))
         slots = placeholders(candidates)
+        allowed, allowed_params = access_control.read_filter(cursor, "messages.chat_jid")
         cursor.execute(f"""
             {message_source(cursor)}
-            WHERE messages.sender IN ({slots}) OR chats.jid IN ({slots})
+            WHERE (messages.sender IN ({slots}) OR chats.jid IN ({slots}))
+              AND {allowed}
             ORDER BY messages.timestamp DESC
             LIMIT 1
-        """, tuple(candidates) * 2)
+        """, tuple(candidates) * 2 + tuple(allowed_params))
 
         row = cursor.fetchone()
         if not row:
@@ -145,15 +152,17 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
     try:
         cursor = conn.cursor()
         with_contacts = contacts_available(cursor)
+        allowed, allowed_params = access_control.read_filter(cursor, "c.jid")
         canonical = f"{digits}@s.whatsapp.net"
         candidates = alias_candidates(cursor, canonical)
         cursor.execute(
             chat_query(
                 with_contacts,
                 True,
-                f"WHERE c.jid IN ({placeholders(candidates)}) AND c.jid NOT LIKE '%@g.us'",
+                f"WHERE c.jid IN ({placeholders(candidates)}) AND c.jid NOT LIKE '%@g.us' "
+                f"AND {allowed}",
             ),
-            tuple(candidates),
+            tuple(candidates) + tuple(allowed_params),
         )
         rows = cursor.fetchall()
 
@@ -163,9 +172,10 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
                     with_contacts,
                     True,
                     "WHERE c.jid NOT LIKE '%@g.us' "
-                    "AND substr(c.jid, 1, instr(c.jid, '@') - 1) LIKE ? ESCAPE '\\'",
+                    "AND substr(c.jid, 1, instr(c.jid, '@') - 1) LIKE ? ESCAPE '\\' "
+                    f"AND {allowed}",
                 ),
-                (f"%{escape_like(digits)}",),
+                (f"%{escape_like(digits)}", *allowed_params),
             )
             rows = cursor.fetchall()
             matched_jids = sorted({row[0] for row in rows})
@@ -180,7 +190,8 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
                 merged_jid = resolve_chat_jid(cursor, matched_jids[0])
                 if merged_jid != matched_jids[0]:
                     cursor.execute(
-                        chat_query(with_contacts, True, "WHERE c.jid = ?"), (merged_jid,)
+                        chat_query(with_contacts, True, f"WHERE c.jid = ? AND {allowed}"),
+                        (merged_jid, *allowed_params),
                     )
                     merged_rows = cursor.fetchall()
                     if merged_rows:

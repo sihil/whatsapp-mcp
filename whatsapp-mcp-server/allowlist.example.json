@@ -1,0 +1,11 @@
+{
+  "name": "family",
+  "allowRead": [
+    { "id": "447700900000", "name": "Mum" },
+    { "id": "12345678901234@lid", "name": "Mum (LID)" },
+    { "id": "120363000000000000@g.us", "name": "Family group" }
+  ],
+  "allowWrite": [
+    { "id": "120363000000000000@g.us", "name": "Family group" }
+  ]
+}

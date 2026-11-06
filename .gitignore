@@ -4,3 +4,7 @@ whatsapp.log
 .mcp.json
 whatsapp-bridge/whatsapp-bridge
 whatsapp-bridge/whatsapp-client
+*.allowlist.json
+whatsapp-mcp-server/.venv
+.pytest_cache
+__pycache__

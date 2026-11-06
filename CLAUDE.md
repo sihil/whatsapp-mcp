@@ -22,9 +22,11 @@ Two cooperating processes; both must be running for the system to work:
 - **Reads** (list/search messages, chats, contacts): Python queries the bridge's SQLite DB **directly** at `whatsapp-bridge/store/messages.db` (path computed relative to `config.py`; override with `WHATSAPP_MCP_DB_PATH`). The Go bridge is not involved.
 - **Writes/live actions** (send message/file/audio, download media, group members): Python calls the bridge's REST API at `http://localhost:8080/api` (override with `WHATSAPP_API_BASE_URL`), which talks to WhatsApp.
 
+**Access control** (`whatsapp-mcp-server/access_control.py`): every instance needs `WHATSAPP_MCP_ALLOWLIST`, a JSON file with `allowRead` and `allowWrite` lists of chat IDs, and refuses to start without it (format in `whatsapp-mcp-server/README.md`). Read queries add `access_control.read_filter(cursor, column)` to their WHERE clause; an explicitly named chat goes through `check_readable`, and every bridge call that sends or alters a message goes through `check_writable` first (`download_media` and group members need read access). Both expand the configured IDs through `jid_aliases`, so a phone-number entry matches the person's `@lid` key and vice versa. A new read query or bridge call must apply one of these, and `whatsapp-mcp-server/tests/` should prove it.
+
 Other env vars (all read in `config.py`): `WHATSAPP_MCP_ALLOWED_MEDIA_DIRS` (allowlist for outbound media paths, separated by `os.pathsep` — `:` on Unix, `;` on Windows; unset = any existing file), `WHATSAPP_MCP_SEND_RATE_LIMIT` (max sends/minute across the send tools plus `send_reaction`/`edit_message`/`delete_message`, default 30, `0` disables), `WHATSAPP_MCP_LOG_LEVEL` (stderr log level, default INFO — stdout carries only JSON-RPC).
 
-**Adding a tool that needs live WhatsApp data touches four places** (see recent group-members commits as a template): an endpoint handler in `whatsapp-bridge/main.go`, an implementation function in `whatsapp-mcp-server/api_client.py` that calls it, a re-export in `whatsapp.py`, and an `@mcp.tool()` wrapper in `tools_send.py` (read-only tools go in `tools_read.py`, backed by `db_chats.py`/`db_contacts.py`/`db_messages.py`). The react/edit/delete tools follow it with `api_actions.py` (sharing `api_client`'s rate limiter and transport) in place of `api_client.py`, and their handlers live in `api_mutations.go`. On the read side every message dict gains `edited`, `deleted` and `reactions`; `db_reactions.py` fetches a listing's reactions in one query, and the read layer probes once per request for the columns/table so a store from an older bridge reads as unedited/undeleted/no reactions.
+**Adding a tool that needs live WhatsApp data touches four places** (see recent group-members commits as a template): an endpoint handler in `whatsapp-bridge/main.go`, an implementation function in `whatsapp-mcp-server/api_client.py` that calls it, a re-export in `whatsapp.py`, and an `@mcp.tool()` wrapper in `tools_send.py`, plus an access check (see Access control) (read-only tools go in `tools_read.py`, backed by `db_chats.py`/`db_contacts.py`/`db_messages.py`). The react/edit/delete tools follow it with `api_actions.py` (sharing `api_client`'s rate limiter and transport) in place of `api_client.py`, and their handlers live in `api_mutations.go`. On the read side every message dict gains `edited`, `deleted` and `reactions`; `db_reactions.py` fetches a listing's reactions in one query, and the read layer probes once per request for the columns/table so a store from an older bridge reads as unedited/undeleted/no reactions.
 
 ### Storage
 
@@ -51,7 +53,7 @@ cd whatsapp-bridge && go run . -pair-phone 15551234567  # pair by 8-char code in
 cd whatsapp-mcp-server && uv run main.py
 ```
 
-Python deps are managed with `uv` (`pyproject.toml` + `uv.lock`, Python ≥3.11). The Go bridge has tests (`go test ./...`); there are no Python tests and no linters configured.
+Python deps are managed with `uv` (`pyproject.toml` + `uv.lock`, Python ≥3.11). The Go bridge has tests (`go test ./...`); the MCP server has pytest tests (`cd whatsapp-mcp-server && uv run pytest`). No linters are configured.
 
 ## Gotchas
 

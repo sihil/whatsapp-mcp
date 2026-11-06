@@ -3,6 +3,7 @@ import logging
 import sqlite3
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import access_control
 from db import (
     DATE_EXPR,
     alias_candidates,
@@ -78,8 +79,9 @@ def _build_message_filters(
     chat_jid: Optional[str],
     query: Optional[str],
 ) -> Tuple[List[str], List[Any]]:
-    where_clauses: List[str] = []
-    params: List[Any] = []
+    allowed, allowed_params = access_control.read_filter(cursor, "messages.chat_jid")
+    where_clauses: List[str] = [allowed]
+    params: List[Any] = list(allowed_params)
 
     if after:
         where_clauses.append(f"{DATE_EXPR} > datetime(?)")
@@ -99,8 +101,10 @@ def _build_message_filters(
         params.extend(candidates)
 
     if chat_jid:
+        resolved_jid = resolve_chat_jid(cursor, canonical_jid(chat_jid))
+        access_control.check_readable(resolved_jid, cursor)
         where_clauses.append("messages.chat_jid = ?")
-        params.append(resolve_chat_jid(cursor, canonical_jid(chat_jid)))
+        params.append(resolved_jid)
 
     if query:
         where_clauses.append("LOWER(messages.content) LIKE LOWER(?) ESCAPE '\\'")
@@ -191,11 +195,14 @@ def get_message_context(
     try:
         cursor = conn.cursor()
         source = message_source(cursor)
-        query = f"{source} WHERE messages.id = ?"
-        params: List[Any] = [message_id]
+        allowed, allowed_params = access_control.read_filter(cursor, "messages.chat_jid")
+        query = f"{source} WHERE messages.id = ? AND {allowed}"
+        params: List[Any] = [message_id, *allowed_params]
         if chat_jid:
+            resolved_jid = resolve_chat_jid(cursor, canonical_jid(chat_jid))
+            access_control.check_readable(resolved_jid, cursor)
             query += " AND messages.chat_jid = ?"
-            params.append(resolve_chat_jid(cursor, canonical_jid(chat_jid)))
+            params.append(resolved_jid)
 
         cursor.execute(query, tuple(params))
         row = cursor.fetchone()
