@@ -5,7 +5,7 @@ from typing import Annotated, Any, Dict, Optional, Tuple
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from server import mcp
+from server import tool
 from whatsapp import (
     delete_message as whatsapp_delete_message,
     edit_message as whatsapp_edit_message,
@@ -47,7 +47,7 @@ def _result(outcome: Tuple[bool, str]) -> Dict[str, Any]:
     return {"success": True, "message": status_message}
 
 
-@mcp.tool(title="Send Message", annotations=_SEND)
+@tool(title="Send Message", annotations=_SEND)
 def send_message(
     recipient: Annotated[str, Field(description=_RECIPIENT_DESC)],
     message: Annotated[str, Field(description="The message text to send")],
@@ -67,7 +67,7 @@ def send_message(
     return _result(whatsapp_send_message(recipient, message, reply_to))
 
 
-@mcp.tool(title="Send File", annotations=_SEND)
+@tool(title="Send File", annotations=_SEND)
 def send_file(
     recipient: Annotated[str, Field(description=_RECIPIENT_DESC)],
     media_path: Annotated[
@@ -90,7 +90,7 @@ def send_file(
     return _result(whatsapp_send_file(recipient, media_path, reply_to))
 
 
-@mcp.tool(title="Send Audio Message", annotations=_SEND)
+@tool(title="Send Audio Message", annotations=_SEND)
 def send_audio_message(
     recipient: Annotated[str, Field(description=_RECIPIENT_DESC)],
     media_path: Annotated[
@@ -118,7 +118,7 @@ def send_audio_message(
     return _result(whatsapp_send_audio_message(recipient, media_path, reply_to))
 
 
-@mcp.tool(title="Download Media", annotations=_IDEMPOTENT)
+@tool(title="Download Media", annotations=_IDEMPOTENT)
 def download_media(
     message_id: Annotated[str, Field(description="The ID of the message containing the media")],
     chat_jid: Annotated[str, Field(description=_CHAT_JID_DESC)],
@@ -137,7 +137,7 @@ def download_media(
     }
 
 
-@mcp.tool(title="List Group Members", annotations=_GROUP_MEMBERS)
+@tool(title="List Group Members", annotations=_GROUP_MEMBERS)
 def list_group_members(
     group_jid: Annotated[str, Field(description="The JID of the group (must end with @g.us)")],
 ) -> Dict[str, Any]:
@@ -152,7 +152,7 @@ def list_group_members(
     return result
 
 
-@mcp.tool(title="Send Reaction", annotations=_IDEMPOTENT)
+@tool(title="Send Reaction", annotations=_IDEMPOTENT)
 def send_reaction(
     chat_jid: Annotated[str, Field(description=_CHAT_JID_DESC)],
     message_id: Annotated[str, Field(description=_MESSAGE_ID_DESC)],
@@ -169,7 +169,7 @@ def send_reaction(
     return _result(whatsapp_send_reaction(chat_jid, message_id, emoji))
 
 
-@mcp.tool(title="Edit Message", annotations=_IDEMPOTENT)
+@tool(title="Edit Message", annotations=_IDEMPOTENT)
 def edit_message(
     chat_jid: Annotated[str, Field(description=_CHAT_JID_DESC)],
     message_id: Annotated[str, Field(description=_MESSAGE_ID_DESC)],
@@ -182,7 +182,7 @@ def edit_message(
     return _result(whatsapp_edit_message(chat_jid, message_id, message))
 
 
-@mcp.tool(title="Delete Message", annotations=_DELETE)
+@tool(title="Delete Message", annotations=_DELETE)
 def delete_message(
     chat_jid: Annotated[str, Field(description=_CHAT_JID_DESC)],
     message_id: Annotated[str, Field(description=_MESSAGE_ID_DESC)],

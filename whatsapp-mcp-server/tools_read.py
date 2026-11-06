@@ -5,7 +5,7 @@ from typing import Annotated, Any, Dict, List, Literal, Optional
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from server import mcp
+from server import tool
 from whatsapp import (
     get_chat as whatsapp_get_chat,
     get_contact_chats as whatsapp_get_contact_chats,
@@ -20,7 +20,7 @@ from whatsapp import (
 _READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
 
 
-@mcp.tool(title="Search Contacts", annotations=_READ_ONLY)
+@tool(title="Search Contacts", annotations=_READ_ONLY)
 def search_contacts(
     query: Annotated[
         str, Field(description="Search term to match against contact names or phone numbers")
@@ -34,7 +34,7 @@ def search_contacts(
     return whatsapp_search_contacts(query, limit)
 
 
-@mcp.tool(title="List Messages", annotations=_READ_ONLY)
+@tool(title="List Messages", annotations=_READ_ONLY)
 def list_messages(
     after: Annotated[
         Optional[str], Field(description="Only return messages after this ISO-8601 date")
@@ -86,7 +86,7 @@ def list_messages(
     )
 
 
-@mcp.tool(title="List Chats", annotations=_READ_ONLY)
+@tool(title="List Chats", annotations=_READ_ONLY)
 def list_chats(
     query: Annotated[
         Optional[str], Field(description="Filter chats by name or JID")
@@ -114,7 +114,7 @@ def list_chats(
     )
 
 
-@mcp.tool(title="Get Chat", annotations=_READ_ONLY)
+@tool(title="Get Chat", annotations=_READ_ONLY)
 def get_chat(
     chat_jid: Annotated[str, Field(description="The JID of the chat to retrieve")],
     include_last_message: Annotated[
@@ -125,7 +125,7 @@ def get_chat(
     return whatsapp_get_chat(chat_jid, include_last_message)
 
 
-@mcp.tool(title="Get Direct Chat by Contact", annotations=_READ_ONLY)
+@tool(title="Get Direct Chat by Contact", annotations=_READ_ONLY)
 def get_direct_chat_by_contact(
     sender_phone_number: Annotated[str, Field(description="The phone number to search for")],
 ) -> Dict[str, Any]:
@@ -134,7 +134,7 @@ def get_direct_chat_by_contact(
     return whatsapp_get_direct_chat_by_contact(sender_phone_number)
 
 
-@mcp.tool(title="Get Contact's Chats", annotations=_READ_ONLY)
+@tool(title="Get Contact's Chats", annotations=_READ_ONLY)
 def get_contact_chats(
     jid: Annotated[str, Field(description="The contact's JID to search for")],
     limit: Annotated[
@@ -146,7 +146,7 @@ def get_contact_chats(
     return whatsapp_get_contact_chats(jid, limit, page)
 
 
-@mcp.tool(title="Get Last Interaction", annotations=_READ_ONLY)
+@tool(title="Get Last Interaction", annotations=_READ_ONLY)
 def get_last_interaction(
     jid: Annotated[str, Field(description="The JID of the contact to search for")],
 ) -> str:
@@ -156,7 +156,7 @@ def get_last_interaction(
     return whatsapp_get_last_interaction(jid)
 
 
-@mcp.tool(title="Get Message Context", annotations=_READ_ONLY)
+@tool(title="Get Message Context", annotations=_READ_ONLY)
 def get_message_context(
     message_id: Annotated[str, Field(description="The ID of the message to get context for")],
     before: Annotated[
