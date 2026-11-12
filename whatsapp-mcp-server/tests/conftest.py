@@ -57,7 +57,7 @@ _SCHEMA = """
     CREATE TABLE group_links (
         group_jid TEXT PRIMARY KEY, parent_jid TEXT NOT NULL DEFAULT '',
         is_community INTEGER NOT NULL DEFAULT 0, is_announcement INTEGER NOT NULL DEFAULT 0,
-        name TEXT NOT NULL DEFAULT ''
+        name TEXT NOT NULL DEFAULT '', is_member INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE group_events (
         chat_jid TEXT NOT NULL, kind TEXT NOT NULL, participant TEXT NOT NULL,
