@@ -177,7 +177,7 @@ func TestNewMessageStoreSchema(t *testing.T) {
 	}
 	defer store.Close()
 
-	for _, table := range []string{"chats", "messages", "jid_aliases", "contacts", "group_events"} {
+	for _, table := range []string{"chats", "messages", "jid_aliases", "contacts", "group_events", "group_links"} {
 		var name string
 		if err := store.db.QueryRow(
 			"SELECT name FROM sqlite_master WHERE type='table' AND name=?", table,
