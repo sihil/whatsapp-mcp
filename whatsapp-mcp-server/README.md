@@ -98,6 +98,15 @@ either scope is missing.
 - `allowWrite` covers `send_message`, `send_file`, `send_audio_message`,
   `send_reaction`, `edit_message` and `delete_message`. `[]` makes the
   instance read-only; omitting the key fails closed.
+- `"include": "community"` on a community's entry also covers every group
+  linked to it, including groups linked later: the bridge records links in
+  `group_links` and each check reads them afresh, so no restart is needed.
+  Without it a community entry covers only the community itself, and a group
+  entry never covers its siblings.
+
+  ```json
+  { "id": "120363000000000100@g.us", "name": "Edinburgh", "include": "community" }
+  ```
 - `"*"` in place of the list allows every chat for that scope.
 - A person listed by phone number also matches their `@lid` chat once the
   bridge has recorded the pairing in `jid_aliases`, and the other way round.
@@ -149,6 +158,9 @@ render as a playable voice message).
 - `db_reactions.py` — bulk fetch of a page's reactions.
 - `db_activity.py` — reactions listed by when they were made, and group
   membership changes.
+- `db_communities.py` — communities and their groups from `group_links`;
+  `get_community` asks the bridge for members only when every group is
+  readable.
 - `whatsapp.py` — thin façade re-exporting the public functions for backward
   compatible imports.
 - `audio.py` — FFmpeg conversion helper.

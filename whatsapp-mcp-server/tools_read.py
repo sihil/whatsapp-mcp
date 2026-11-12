@@ -8,11 +8,13 @@ from pydantic import Field
 from server import tool
 from whatsapp import (
     get_chat as whatsapp_get_chat,
+    get_community as whatsapp_get_community,
     get_contact_chats as whatsapp_get_contact_chats,
     get_direct_chat_by_contact as whatsapp_get_direct_chat_by_contact,
     get_last_interaction as whatsapp_get_last_interaction,
     get_message_context as whatsapp_get_message_context,
     list_chats as whatsapp_list_chats,
+    list_communities as whatsapp_list_communities,
     list_group_events as whatsapp_list_group_events,
     list_messages as whatsapp_list_messages,
     list_reactions as whatsapp_list_reactions,
@@ -239,3 +241,31 @@ def list_group_events(
     Only changes since the bridge began recording them are known; use
     list_group_members for the current roster."""
     return whatsapp_list_group_events(chat_jid, after, before, limit, page)
+
+
+@tool(title="List Communities", annotations=_READ_ONLY)
+def list_communities() -> List[Dict[str, Any]]:
+    """List the WhatsApp communities this server can see: each readable
+    community, and each community with at least one readable group. Each item
+    is {jid, name, readable, subgroups, hidden_subgroups}; subgroups lists the
+    readable groups ({jid, name, is_announcement, last_message_time}) and
+    hidden_subgroups counts the community's groups outside this server's
+    allowlist. Covers communities the account is in, as of the bridge's last
+    sync."""
+    return whatsapp_list_communities()
+
+
+@tool(title="Get Community", annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
+def get_community(
+    community_jid: Annotated[str, Field(description="The community's JID (ending @g.us)")],
+    include_members: Annotated[
+        bool,
+        Field(description="Also list everyone across the community's groups, fetched live "
+              "from WhatsApp. Refused unless every one of its groups is readable."),
+    ] = False,
+) -> Dict[str, Any]:
+    """Get one WhatsApp community: {jid, name, readable, subgroups,
+    hidden_subgroups}, plus members and member_count with include_members.
+    Each member is {jid, phone_number, display_name}. Errors when the
+    community is not readable or is not a community."""
+    return whatsapp_get_community(community_jid, include_members)

@@ -11,15 +11,23 @@ OTHER_GROUP = "120363000000000002@g.us"
 FRIEND = "447700900001@s.whatsapp.net"
 FRIEND_LID = "11111111111111@lid"
 STRANGER = "447700900002@s.whatsapp.net"
+COMMUNITY = "120363000000000100@g.us"
+PLAIN_COMMUNITY = "120363000000000200@g.us"
 
 # access_control reads its config once, at import, so the allowlist has to be
 # in place before any server module is imported. FRIEND is listed only by LID
-# to exercise jid_aliases expansion.
+# to exercise jid_aliases expansion. COMMUNITY covers its linked groups;
+# PLAIN_COMMUNITY is listed without, so it covers only itself.
 _allowlist = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
 json.dump(
     {
         "name": "test",
-        "allowRead": [{"id": GROUP}, {"id": FRIEND_LID}],
+        "allowRead": [
+            {"id": GROUP},
+            {"id": FRIEND_LID},
+            {"id": COMMUNITY, "include": "community"},
+            {"id": PLAIN_COMMUNITY},
+        ],
         "allowWrite": [{"id": GROUP}],
     },
     _allowlist,
@@ -45,6 +53,11 @@ _SCHEMA = """
         message_id TEXT NOT NULL, chat_jid TEXT NOT NULL, sender TEXT NOT NULL,
         emoji TEXT NOT NULL, timestamp TIMESTAMP,
         PRIMARY KEY (message_id, chat_jid, sender)
+    );
+    CREATE TABLE group_links (
+        group_jid TEXT PRIMARY KEY, parent_jid TEXT NOT NULL DEFAULT '',
+        is_community INTEGER NOT NULL DEFAULT 0, is_announcement INTEGER NOT NULL DEFAULT 0,
+        name TEXT NOT NULL DEFAULT ''
     );
     CREATE TABLE group_events (
         chat_jid TEXT NOT NULL, kind TEXT NOT NULL, participant TEXT NOT NULL,
