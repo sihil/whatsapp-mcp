@@ -49,8 +49,9 @@ type Message struct {
 
 // Database handler for storing message history
 type MessageStore struct {
-	db         *sql.DB
-	mergedLIDs sync.Map // LIDs already folded into their phone number (see lid_merge.go)
+	db                 *sql.DB
+	mergedLIDs         sync.Map    // LIDs already folded into their phone number (see lid_merge.go)
+	syncingCommunities atomic.Bool // a community sync pass is running (see group_links.go)
 }
 
 // Initialize message store
@@ -98,7 +99,7 @@ func NewMessageStore() (*MessageStore, error) {
 			old_jid TEXT PRIMARY KEY,
 			new_jid TEXT NOT NULL
 		);
-	` + contactsSchema + ";" + senderIndexSchema + ";" + groupEventsSchema + ";")
+	` + contactsSchema + ";" + senderIndexSchema + ";" + groupEventsSchema + ";" + groupLinksSchema + ";")
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to create tables: %v", err)
@@ -1057,6 +1058,53 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, ready
 	})
 
 	// Handler for getting group members
+	// Everyone in a community's linked groups. Answers like /api/group/members.
+	http.HandleFunc("/api/community/members", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			CommunityJID string `json:"community_jid"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request format", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		jid, err := types.ParseJID(req.CommunityJID)
+		if err != nil || jid.Server != types.GroupServer {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(GroupMembersResponse{Message: "community_jid must be a group JID ending @g.us"})
+			return
+		}
+		ctx := r.Context()
+		jids, err := client.GetLinkedGroupsParticipants(ctx, jid)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(GroupMembersResponse{Message: fmt.Sprintf("Failed to get community members: %v", err)})
+			return
+		}
+		members := make([]GroupMember, 0, len(jids))
+		var learned []ContactNames
+		for _, participant := range jids {
+			member, names := communityMember(ctx, client.Store.LIDs, client.Store.Contacts, participant)
+			members = append(members, member)
+			if names != nil {
+				learned = append(learned, *names)
+			}
+		}
+		if err := messageStore.StoreContacts(learned); err != nil {
+			fmt.Printf("Warning: failed to store contact names for community %s: %v\n", jid, err)
+		}
+		var name string
+		messageStore.db.QueryRowContext(ctx, `SELECT name FROM group_links WHERE group_jid = ?`, jid.String()).Scan(&name)
+		json.NewEncoder(w).Encode(GroupMembersResponse{
+			Success: true, Message: "Successfully retrieved community members",
+			GroupName: name, Members: members, MemberCount: len(members),
+		})
+	})
+
 	http.HandleFunc("/api/group/members", func(w http.ResponseWriter, r *http.Request) {
 		// Only allow POST requests
 		if r.Method != http.MethodPost {
@@ -1250,9 +1298,21 @@ func main() {
 			if err := messageStore.StoreGroupEvents(groupEventsFromInfo(context.Background(), client.Store.LIDs, v)); err != nil {
 				logger.Warnf("Failed to store membership changes in %s: %v", v.JID, err)
 			}
+			if links, err := messageStore.ApplyGroupLinkChanges(context.Background(), client.Store.LIDs, v); err != nil {
+				logger.Warnf("Failed to apply community link changes in %s: %v", v.JID, err)
+			} else if err := messageStore.StoreGroupEvents(links); err != nil {
+				logger.Warnf("Failed to store community link changes in %s: %v", v.JID, err)
+			}
+
+		case *events.JoinedGroup:
+			if err := messageStore.PutGroupInfo(&v.GroupInfo); err != nil {
+				logger.Warnf("Failed to record community structure of %s: %v", v.JID, err)
+			}
 
 		case *events.Connected:
 			logger.Infof("Connected to WhatsApp")
+			// Asks WhatsApp, so not on the event goroutine.
+			go syncCommunities(client, messageStore, logger)
 
 		case *events.LoggedOut:
 			logger.Warnf("Device logged out, please scan QR code to log in again")
