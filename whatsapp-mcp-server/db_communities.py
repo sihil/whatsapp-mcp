@@ -15,6 +15,12 @@ def _links_available(cursor: sqlite3.Cursor) -> bool:
     return cursor.fetchone() is not None
 
 
+def _membership_expr(cursor: sqlite3.Cursor) -> str:
+    """is_member, or NULL on a store whose bridge does not track it yet."""
+    cursor.execute("SELECT 1 FROM pragma_table_info('group_links') WHERE name = 'is_member'")
+    return "l.is_member" if cursor.fetchone() else "NULL"
+
+
 def _community_jids(cursor: sqlite3.Cursor) -> List[str]:
     cursor.execute("""
         SELECT group_jid FROM group_links WHERE is_community = 1
@@ -37,15 +43,15 @@ def _name(cursor: sqlite3.Cursor, jid: str) -> Optional[str]:
 def _describe(
     cursor: sqlite3.Cursor, community: str, readable: Optional[frozenset]
 ) -> Dict[str, Any]:
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT l.group_jid, COALESCE(NULLIF(TRIM(l.name), ''), NULLIF(TRIM(c.name), '')),
-               l.is_announcement, c.last_message_time
+               l.is_announcement, c.last_message_time, {_membership_expr(cursor)}
         FROM group_links l LEFT JOIN chats c ON c.jid = l.group_jid
         WHERE l.parent_jid = ?
         ORDER BY l.is_announcement DESC, 2, l.group_jid
     """, (community,))
     subgroups, hidden = [], 0
-    for jid, name, is_announcement, last_message_time in cursor.fetchall():
+    for jid, name, is_announcement, last_message_time, is_member in cursor.fetchall():
         if readable is not None and jid not in readable:
             hidden += 1
             continue
@@ -53,6 +59,7 @@ def _describe(
             "jid": jid,
             "name": name,
             "is_announcement": bool(is_announcement),
+            "is_member": None if is_member is None else bool(is_member),
             "last_message_time": (
                 datetime.fromisoformat(last_message_time).isoformat() if last_message_time else None
             ),

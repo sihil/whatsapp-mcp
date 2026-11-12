@@ -248,7 +248,9 @@ def list_communities() -> List[Dict[str, Any]]:
     """List the WhatsApp communities this server can see: each readable
     community, and each community with at least one readable group. Each item
     is {jid, name, readable, subgroups, hidden_subgroups}; subgroups lists the
-    readable groups ({jid, name, is_announcement, last_message_time}) and
+    readable groups ({jid, name, is_announcement, is_member,
+    last_message_time}; is_member says whether the account is in the group,
+    null when the bridge has not recorded it) and
     hidden_subgroups counts the community's groups outside this server's
     allowlist. Covers communities the account is in, as of the bridge's last
     sync."""

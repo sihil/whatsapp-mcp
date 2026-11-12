@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -284,5 +286,96 @@ func TestSyncGroupLinksPacesAndStopsWhenRateLimited(t *testing.T) {
 	}
 	if len(lister.asked) != 3 {
 		t.Errorf("a day later asked %v, want all three again", lister.asked)
+	}
+}
+
+func isMember(t *testing.T, s *MessageStore, jid string) bool {
+	t.Helper()
+	var member bool
+	if err := s.db.QueryRow("SELECT is_member FROM group_links WHERE group_jid = ?", jid).Scan(&member); err != nil {
+		t.Fatalf("is_member of %s: %v", jid, err)
+	}
+	return member
+}
+
+// Every sync replaces membership with the joined list: a subgroup listed
+// only through its community is not joined, and a group left since the last
+// sync stops being joined.
+func TestSyncGroupLinksRecordsMembership(t *testing.T) {
+	s := newMutationStore(t)
+	ctx := context.Background()
+	lister := &fakeGroupLister{
+		joined: []*types.GroupInfo{
+			groupInfo(tSubgroup, "Corstorphine", tCommunity, false, false),
+			groupInfo(tStandard, "Book club", "", false, false),
+		},
+		subGroups: map[string][]*types.GroupLinkTarget{
+			tCommunity: {linkTarget(tSubgroup, "Corstorphine", false), linkTarget(tHidden, "Leith", false)},
+		},
+	}
+	if _, _, err := syncGroupLinks(ctx, lister, s, t0, func() {}); err != nil {
+		t.Fatal(err)
+	}
+	if !isMember(t, s, tSubgroup) || !isMember(t, s, tStandard) {
+		t.Error("joined groups not marked as joined")
+	}
+	if isMember(t, s, tHidden) || isMember(t, s, tCommunity) {
+		t.Error("groups known only through the community marked as joined")
+	}
+
+	lister.joined = lister.joined[:1]
+	if _, _, err := syncGroupLinks(ctx, lister, s, t0.Add(time.Hour), func() {}); err != nil {
+		t.Fatal(err)
+	}
+	if isMember(t, s, tStandard) {
+		t.Error("a group left since the last sync is still marked as joined")
+	}
+	if !isMember(t, s, tSubgroup) {
+		t.Error("a group still joined lost its flag")
+	}
+}
+
+func TestApplyOwnMembership(t *testing.T) {
+	s := newMutationStore(t)
+	must(t, s.PutSubGroups(parsed(tCommunity), []*types.GroupLinkTarget{linkTarget(tHidden, "Leith", false)}))
+	must(t, s.PutGroupInfo(groupInfo(tStandard, "Book club", "", false, false)))
+
+	must(t, s.ApplyOwnMembership([]groupEvent{
+		{tHidden, "join", tMe, tPeer, "added", t0},
+		{tStandard, "leave", tMe, tMe, "left", t0},
+		{tSubgroup, "join", tOther, "", "", t0}, // someone else's change
+	}, tMe))
+	if !isMember(t, s, tHidden) {
+		t.Error("being added did not mark the group as joined")
+	}
+	if isMember(t, s, tStandard) {
+		t.Error("leaving did not clear the flag")
+	}
+	var n int
+	s.db.QueryRow("SELECT COUNT(*) FROM group_links WHERE group_jid = ?", tSubgroup).Scan(&n)
+	if n != 0 {
+		t.Error("another person's join created a row")
+	}
+}
+
+// A store whose group_links predates is_member gains the column.
+func TestMigrateGroupLinksAddsMembership(t *testing.T) {
+	t.Chdir(t.TempDir())
+	must(t, os.MkdirAll("store", 0755))
+	db, err := sql.Open("sqlite3", "file:store/messages.db")
+	must(t, err)
+	_, err = db.Exec(`CREATE TABLE group_links (group_jid TEXT PRIMARY KEY, parent_jid TEXT NOT NULL DEFAULT '',
+		is_community INTEGER NOT NULL DEFAULT 0, is_announcement INTEGER NOT NULL DEFAULT 0, name TEXT NOT NULL DEFAULT '');
+		INSERT INTO group_links (group_jid) VALUES ('` + tStandard + `')`)
+	must(t, err)
+	db.Close()
+
+	s, err := NewMessageStore()
+	if err != nil {
+		t.Fatalf("NewMessageStore on an older group_links: %v", err)
+	}
+	defer s.Close()
+	if isMember(t, s, tStandard) {
+		t.Error("existing rows should start as not joined until the next sync")
 	}
 }

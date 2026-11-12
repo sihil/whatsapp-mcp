@@ -26,7 +26,12 @@ _LINKS = [
 @pytest.fixture
 def communities(store):
     conn = sqlite3.connect(store)
-    conn.executemany("INSERT INTO group_links VALUES (?, ?, ?, ?, ?)", _LINKS)
+    conn.executemany(
+        "INSERT INTO group_links (group_jid, parent_jid, is_community, is_announcement, name) "
+        "VALUES (?, ?, ?, ?, ?)",
+        _LINKS,
+    )
+    conn.executemany("UPDATE group_links SET is_member = 1 WHERE group_jid = ?", [(ANNOUNCE,), (GROUP,)])
     conn.executemany(
         "INSERT INTO chats VALUES (?, ?, ?)",
         [
@@ -41,7 +46,9 @@ def communities(store):
 
 def _link(store, group, parent):
     conn = sqlite3.connect(store)
-    conn.execute("INSERT OR REPLACE INTO group_links VALUES (?, ?, 0, 0, '')", (group, parent))
+    conn.execute(
+        "INSERT OR REPLACE INTO group_links (group_jid, parent_jid) VALUES (?, ?)", (group, parent)
+    )
     conn.commit()
     conn.close()
 
@@ -133,3 +140,17 @@ def test_community_tools_are_registered(communities):
     one = asyncio.run(mcp.call_tool("get_community", {"community_jid": COMMUNITY}))
     assert len(listed.structured_content["result"]) == 3
     assert one.structured_content["result"]["jid"] == COMMUNITY
+
+
+def test_subgroups_say_whether_the_account_is_in_them(communities):
+    edinburgh = _by_jid(_by_jid(list_communities())[COMMUNITY]["subgroups"])
+    assert edinburgh[ANNOUNCE]["is_member"] is True
+    assert edinburgh[SUBGROUP]["is_member"] is False
+
+
+def test_membership_is_unknown_on_a_store_without_it(communities):
+    conn = sqlite3.connect(communities)
+    conn.execute("ALTER TABLE group_links DROP COLUMN is_member")
+    conn.close()
+    subgroups = _by_jid(list_communities())[COMMUNITY]["subgroups"]
+    assert {s["is_member"] for s in subgroups} == {None}

@@ -108,6 +108,10 @@ func NewMessageStore() (*MessageStore, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrateGroupLinks(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	return &MessageStore{db: db}, nil
 }
@@ -1295,8 +1299,12 @@ func main() {
 			handleHistorySync(client, messageStore, v, logger)
 
 		case *events.GroupInfo:
-			if err := messageStore.StoreGroupEvents(groupEventsFromInfo(context.Background(), client.Store.LIDs, v)); err != nil {
+			changes := groupEventsFromInfo(context.Background(), client.Store.LIDs, v)
+			if err := messageStore.StoreGroupEvents(changes); err != nil {
 				logger.Warnf("Failed to store membership changes in %s: %v", v.JID, err)
+			}
+			if err := messageStore.ApplyOwnMembership(changes, client.Store.GetJID().ToNonAD().String()); err != nil {
+				logger.Warnf("Failed to record own membership of %s: %v", v.JID, err)
 			}
 			if links, err := messageStore.ApplyGroupLinkChanges(context.Background(), client.Store.LIDs, v); err != nil {
 				logger.Warnf("Failed to apply community link changes in %s: %v", v.JID, err)

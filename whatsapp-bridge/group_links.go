@@ -26,7 +26,8 @@ const groupLinksSchema = `
 		parent_jid      TEXT NOT NULL DEFAULT '',
 		is_community    INTEGER NOT NULL DEFAULT 0,
 		is_announcement INTEGER NOT NULL DEFAULT 0,
-		name            TEXT NOT NULL DEFAULT ''
+		name            TEXT NOT NULL DEFAULT '',
+		is_member       INTEGER NOT NULL DEFAULT 0
 	);
 	CREATE INDEX IF NOT EXISTS idx_group_links_parent ON group_links(parent_jid);
 	CREATE TABLE IF NOT EXISTS community_syncs (
@@ -58,10 +59,50 @@ func jidOrEmpty(jid types.JID) string {
 	return jid.String()
 }
 
+// PutGroupInfo records a group the account is in.
 func (store *MessageStore) PutGroupInfo(info *types.GroupInfo) error {
-	_, err := store.db.Exec(upsertGroupLink, info.JID.String(), jidOrEmpty(info.LinkedParentJID),
-		info.IsParent, info.IsDefaultSubGroup, info.Name)
+	if _, err := store.db.Exec(upsertGroupLink, info.JID.String(), jidOrEmpty(info.LinkedParentJID),
+		info.IsParent, info.IsDefaultSubGroup, info.Name); err != nil {
+		return err
+	}
+	_, err := store.db.Exec(`UPDATE group_links SET is_member = 1 WHERE group_jid = ?`, info.JID.String())
 	return err
+}
+
+// migrateGroupLinks adds is_member to a group_links created before it
+// existed. Existing rows read as not joined until the next sync.
+func migrateGroupLinks(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('group_links') WHERE name = 'is_member'`,
+	).Scan(&n); err != nil || n > 0 {
+		return err
+	}
+	_, err := db.Exec(`ALTER TABLE group_links ADD COLUMN is_member INTEGER NOT NULL DEFAULT 0`)
+	return err
+}
+
+// ApplyOwnMembership tracks the account joining or leaving a group between
+// syncs, from the membership changes of a live event.
+func (store *MessageStore) ApplyOwnMembership(evts []groupEvent, own string) error {
+	for _, e := range evts {
+		if own == "" || e.participant != own {
+			continue
+		}
+		var err error
+		switch e.kind {
+		case "join":
+			_, err = store.db.Exec(`
+				INSERT INTO group_links (group_jid, is_member) VALUES (?, 1)
+				ON CONFLICT(group_jid) DO UPDATE SET is_member = 1`, e.chat)
+		case "leave":
+			_, err = store.db.Exec(`UPDATE group_links SET is_member = 0 WHERE group_jid = ?`, e.chat)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // PutSubGroups records a community and the subgroups WhatsApp lists for it,
@@ -114,14 +155,24 @@ func syncGroupLinks(ctx context.Context, lister groupLister, store *MessageStore
 			due = append(due, jid)
 		}
 	}
+	joinedJIDs := make([]any, 0, len(joined))
 	for _, info := range joined {
 		if err := store.PutGroupInfo(info); err != nil {
 			return 0, 0, err
 		}
+		joinedJIDs = append(joinedJIDs, info.JID.String())
 		if info.IsParent {
 			note(info.JID)
 		}
 		note(info.LinkedParentJID)
+	}
+	// The joined list is complete, so anything missing from it was left.
+	notJoined := `UPDATE group_links SET is_member = 0 WHERE is_member = 1`
+	if len(joinedJIDs) > 0 {
+		notJoined += ` AND group_jid NOT IN (?` + strings.Repeat(",?", len(joinedJIDs)-1) + `)`
+	}
+	if _, err := store.db.Exec(notJoined, joinedJIDs...); err != nil {
+		return 0, 0, err
 	}
 
 	var failures []string
