@@ -14,6 +14,7 @@ from api_client import (
 from config import api_base_url, messages_db_path
 from db import get_sender_name
 from db_activity import list_group_events, list_reactions
+from db_communities import get_community, list_communities
 from db_chats import format_message, get_chat, list_chats
 from db_contacts import (
     get_contact_chats,
@@ -35,6 +36,7 @@ __all__ = [
     "edit_message",
     "format_message",
     "get_chat",
+    "get_community",
     "get_contact_chats",
     "get_direct_chat_by_contact",
     "get_group_members",
@@ -42,6 +44,7 @@ __all__ = [
     "get_message_context",
     "get_sender_name",
     "list_chats",
+    "list_communities",
     "list_group_events",
     "list_messages",
     "list_reactions",

@@ -153,7 +153,9 @@ Claude can access the following tools to interact with WhatsApp:
 - **get_message_context**: Retrieve context around a specific message
 - **list_reactions**: List emoji reactions by when they were made, each with the message it is on
 - **list_group_members**: List a group's current members
-- **list_group_events**: List group membership changes (joins, leaves, promotions, demotions)
+- **list_group_events**: List group membership changes (joins, leaves, promotions, demotions) and groups linked to or unlinked from communities
+- **list_communities**: List communities with their groups
+- **get_community**: Get one community's groups, optionally with everyone across them
 - **send_message**: Send a WhatsApp message to a specified phone number or group JID
 - **send_file**: Send a file (image, video, raw audio, document) to a specified recipient
 - **send_audio_message**: Send an audio file as a WhatsApp voice message (requires the file to be an .ogg opus file or ffmpeg must be installed)

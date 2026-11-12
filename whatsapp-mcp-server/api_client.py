@@ -258,3 +258,12 @@ def get_group_members(group_jid: str) -> dict:
     if body is None:
         return {"success": False, "message": error, "members": [], "member_count": 0}
     return body
+
+
+def get_community_members(community_jid: str) -> dict:
+    """Everyone in a community's linked groups, from the bridge. The caller
+    checks that every one of those groups is readable."""
+    body, error = _post("/community/members", {"community_jid": community_jid}, timeout=(5, 60))
+    if body is None:
+        return {"success": False, "message": error, "members": [], "member_count": 0}
+    return body
