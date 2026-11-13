@@ -43,15 +43,22 @@ only use this for an explicit, intentionally-unrestricted instance.
 ("allowWrite": []) to mean a read-only instance with no send capability at
 all; omitting the key entirely still fails closed, same as a missing
 "allowRead".
+
+Edits to the file apply to the next check without a restart. An edit that
+leaves the file missing, unreadable or invalid denies every chat until it is
+fixed, rather than keeping the previous config.
 """
 
 import json
+import logging
 import os
 import sqlite3
 import sys
 from typing import Any, NamedTuple, Optional
 
 import db
+
+logger = logging.getLogger(__name__)
 
 _ENV_VAR = "WHATSAPP_MCP_ALLOWLIST"
 _DEFAULT_SERVER = "s.whatsapp.net"
@@ -71,18 +78,28 @@ class Scope(NamedTuple):
     communities: frozenset[str]  # each also covers the groups linked to it
 
 
+class Config(NamedTuple):
+    name: str
+    read: Scope
+    write: Scope
+
+
+class AllowlistError(Exception):
+    pass
+
+
 def _entry_id(entry: Any, path: str, key: str) -> tuple[str, bool]:
     """An entry's normalised id, and whether it covers a whole community."""
     if entry == "*":
         return "*", False
     if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
-        sys.exit(
+        raise AllowlistError(
             f"Allowlist config at {path} has a malformed '{key}' entry: "
             f"{entry!r} - expected \"*\" or an object with an \"id\" string"
         )
     include = entry.get("include")
     if include not in (None, "community"):
-        sys.exit(
+        raise AllowlistError(
             f"Allowlist config at {path} has a '{key}' entry with unknown "
             f"include {include!r} - the only option is \"community\""
         )
@@ -92,7 +109,7 @@ def _entry_id(entry: Any, path: str, key: str) -> tuple[str, bool]:
 def _load_scope(config: dict, path: str, key: str, allow_empty: bool = False) -> Scope:
     entries = config.get(key)
     if not isinstance(entries, list) or (not entries and not allow_empty):
-        sys.exit(f"Allowlist config at {path} has no non-empty '{key}' list")
+        raise AllowlistError(f"Allowlist config at {path} has no non-empty '{key}' list")
     ids = [_entry_id(e, path, key) for e in entries]
     return Scope(
         jids=frozenset(jid for jid, community in ids if not community),
@@ -100,7 +117,22 @@ def _load_scope(config: dict, path: str, key: str, allow_empty: bool = False) ->
     )
 
 
-def _load() -> tuple[str, Scope, Scope]:
+def _parse(path: str) -> Config:
+    try:
+        with open(path, "r") as f:
+            config = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        raise AllowlistError(f"Failed to load allowlist config from {path}: {e}") from e
+    if not isinstance(config, dict):
+        raise AllowlistError(f"Allowlist config at {path} is not a JSON object")
+    return Config(
+        name=config.get("name", os.path.basename(path)),
+        read=_load_scope(config, path, "allowRead"),
+        write=_load_scope(config, path, "allowWrite", allow_empty=True),
+    )
+
+
+def _path() -> str:
     path = os.environ.get(_ENV_VAR)
     if not path:
         sys.exit(
@@ -108,23 +140,61 @@ def _load() -> tuple[str, Scope, Scope]:
             f"allowlist - point it at a JSON config listing the chats this "
             f"MCP server instance may access."
         )
+    return path
 
+
+def _load() -> Config:
+    """The config at startup, where any problem stops the server."""
     try:
-        with open(path, "r") as f:
-            config = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        sys.exit(f"Failed to load allowlist config from {path}: {e}")
-
-    read_jids = _load_scope(config, path, "allowRead")
-    write_jids = _load_scope(config, path, "allowWrite", allow_empty=True)
-
-    name = config.get("name", os.path.basename(path))
-    return name, read_jids, write_jids
+        return _parse(_path())
+    except AllowlistError as e:
+        sys.exit(str(e))
 
 
-INSTANCE_NAME, _READ_SCOPE, _WRITE_SCOPE = _load()
-_ALLOW_READ_ALL = "*" in _READ_SCOPE.jids
-_ALLOW_WRITE_ALL = "*" in _WRITE_SCOPE.jids
+def _signature(path: str) -> tuple[int, int, int]:
+    st = os.stat(path)
+    return st.st_mtime_ns, st.st_size, st.st_ino
+
+
+class _State(NamedTuple):
+    signature: tuple[int, int, int]
+    config: Optional[Config]
+    error: Optional[str]
+
+
+_PATH = _path()
+_state = _State(_signature(_PATH), _load(), None)
+
+
+def _current() -> Config:
+    """The config as the file stands now, re-read whenever the file changes.
+
+    Raises PermissionError while the file is missing or invalid.
+    """
+    global _state
+    try:
+        signature = _signature(_PATH)
+    except OSError as e:
+        raise PermissionError(
+            f"Cannot read the allowlist config at {_PATH} ({e}); every chat is "
+            "denied until it is restored"
+        ) from e
+    state = _state
+    if signature != state.signature:
+        try:
+            state = _State(signature, _parse(_PATH), None)
+            logger.info("Reloaded allowlist config from %s", _PATH)
+        except AllowlistError as e:
+            state = _State(signature, None, str(e))
+            logger.error("%s; denying every chat until it is fixed", e)
+        _state = state
+    if state.config is None:
+        raise PermissionError(f"{state.error}; every chat is denied until it is fixed")
+    return state.config
+
+
+def instance_name() -> str:
+    return _current().name
 
 
 def _expand_communities(cursor: Optional[sqlite3.Cursor], scope: Scope) -> frozenset[str]:
@@ -150,9 +220,10 @@ def _expand(cursor: Optional[sqlite3.Cursor], scope: Scope) -> frozenset[str]:
 
 def readable_jids(cursor: sqlite3.Cursor) -> Optional[frozenset[str]]:
     """Every chat JID that may be read, or None when every chat may."""
-    if _ALLOW_READ_ALL:
+    scope = _current().read
+    if "*" in scope.jids:
         return None
-    return _expand(cursor, _READ_SCOPE)
+    return _expand(cursor, scope)
 
 
 def _expand_aliases(cursor: Optional[sqlite3.Cursor], jids: frozenset[str]) -> frozenset[str]:
@@ -194,32 +265,35 @@ def _with_cursor(check, cursor: Optional[sqlite3.Cursor]):
 
 def read_filter(cursor: sqlite3.Cursor, column: str) -> tuple[str, list[str]]:
     """SQL fragment + params restricting `column` to readable chat JIDs."""
-    if _ALLOW_READ_ALL:
+    scope = _current().read
+    if "*" in scope.jids:
         return "1=1", []
-    jids = sorted(_expand(cursor, _READ_SCOPE))
+    jids = sorted(_expand(cursor, scope))
     return f"{column} IN ({','.join('?' for _ in jids)})", jids
 
 
 def check_readable(jid: str, cursor: Optional[sqlite3.Cursor] = None) -> None:
     """Raise PermissionError unless the chat `jid` may be read."""
-    if _ALLOW_READ_ALL:
+    config = _current()
+    if "*" in config.read.jids:
         return
     if _normalize(jid) not in _with_cursor(
-        lambda c: _expand(c, _READ_SCOPE), cursor
+        lambda c: _expand(c, config.read), cursor
     ):
         raise PermissionError(
-            f"{jid} is not in the read allowlist of the '{INSTANCE_NAME}' WhatsApp MCP server"
+            f"{jid} is not in the read allowlist of the '{config.name}' WhatsApp MCP server"
         )
 
 
 def check_writable(recipient: str, cursor: Optional[sqlite3.Cursor] = None) -> None:
     """Raise PermissionError unless `recipient` (phone number or JID) may be
     sent to or have its messages reacted to, edited or deleted."""
-    if _ALLOW_WRITE_ALL:
+    config = _current()
+    if "*" in config.write.jids:
         return
     if _normalize(recipient) not in _with_cursor(
-        lambda c: _expand(c, _WRITE_SCOPE), cursor
+        lambda c: _expand(c, config.write), cursor
     ):
         raise PermissionError(
-            f"{recipient} is not in the write allowlist of the '{INSTANCE_NAME}' WhatsApp MCP server"
+            f"{recipient} is not in the write allowlist of the '{config.name}' WhatsApp MCP server"
         )

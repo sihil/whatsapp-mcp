@@ -108,7 +108,7 @@ def get_community(community_jid: str, include_members: bool = False) -> Dict[str
         if community["hidden_subgroups"]:
             raise PermissionError(
                 f"Members of {community_jid} span {community['hidden_subgroups']} of its groups "
-                f"outside the read allowlist of the '{access_control.INSTANCE_NAME}' WhatsApp "
+                f"outside the read allowlist of the '{access_control.instance_name()}' WhatsApp "
                 "MCP server; list members per group with list_group_members instead"
             )
         result = get_community_members(jid)

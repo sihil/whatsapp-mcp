@@ -75,6 +75,11 @@ WhatsApp account while each sees only its own chats. There is no default: the
 server exits at startup if the variable is unset, the file is unreadable, or
 either scope is missing.
 
+Edits to the file apply to the next tool call, with no restart. An edit that
+leaves the file missing or invalid denies every chat, with the reason in the
+error, until the file is fixed; the server does not fall back to the previous
+version.
+
 ```json
 {
   "name": "family",
@@ -142,7 +147,8 @@ render as a playable voice message).
 - `server.py` — the shared `MCPServer` instance and the `tool` decorator, which
   turns the `PermissionError`/`ValueError`/`RuntimeError` a tool raises on
   purpose into a `ToolError` so the model sees the reason.
-- `access_control.py` — loads the allowlist; `read_filter` for SQL,
+- `access_control.py` — loads the allowlist (re-read when the file
+  changes); `read_filter` for SQL,
   `check_readable`/`check_writable` for single chats and bridge calls.
 - `config.py` — env var reads, logging setup.
 - `tools_read.py` / `tools_send.py` — the `@tool()` wrappers.
