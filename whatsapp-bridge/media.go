@@ -215,6 +215,9 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	if !ok {
 		return mediaInfo{}, "", fmt.Errorf("unsupported media type: %s", media.Type)
 	}
+	if gone, err := messageStore.mediaGone(messageID, chatJID, media.URL); err == nil && gone {
+		return mediaInfo{}, "", fmt.Errorf("media is no longer on WhatsApp's servers; only the phone that has it can upload it again")
+	}
 
 	data, err := client.Download(context.Background(), &MediaDownloader{
 		URL:           media.URL,
@@ -225,20 +228,32 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 		FileEncSHA256: media.FileEncSHA256,
 		MediaType:     waMediaType,
 	})
+	if rerr := messageStore.recordMediaFetch(messageID, chatJID, media.URL, err, time.Now()); rerr != nil {
+		fmt.Printf("Failed to record media download outcome for %s: %v\n", messageID, rerr)
+	}
 	if err != nil {
-		return mediaInfo{}, "", fmt.Errorf("failed to download media: %v", err)
+		return mediaInfo{}, "", fmt.Errorf("failed to download media: %w", err)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(localPath), 0700); err != nil {
 		return mediaInfo{}, "", fmt.Errorf("failed to create media directory: %v", err)
 	}
-	// Written under a temporary name so a failed write never leaves a partial
-	// file that the cache check above would later serve.
-	tmp := localPath + ".part"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
+	// Written under a unique temporary name so a failed write never leaves a
+	// partial file for the cache check above to serve, and the prefetcher and
+	// an on-demand download of the same file cannot collide.
+	tmp, err := os.CreateTemp(filepath.Dir(localPath), ".download-*")
+	if err != nil {
 		return mediaInfo{}, "", fmt.Errorf("failed to save media file: %v", err)
 	}
-	if err := os.Rename(tmp, localPath); err != nil {
+	defer os.Remove(tmp.Name())
+	_, werr := tmp.Write(data)
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		return mediaInfo{}, "", fmt.Errorf("failed to save media file: %v", werr)
+	}
+	if err := os.Rename(tmp.Name(), localPath); err != nil {
 		return mediaInfo{}, "", fmt.Errorf("failed to save media file: %v", err)
 	}
 	fmt.Printf("Downloaded %s media for message %s in %s to %s (%d bytes)\n",

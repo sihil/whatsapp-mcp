@@ -165,7 +165,11 @@ func (store *MessageStore) ApplyRevoke(chatJID, id, revoker string, isAdmin admi
 	if _, err := tx.Exec("DELETE FROM reactions WHERE message_id = ? AND chat_jid = ?", id, chatJID); err != nil {
 		return false, err
 	}
-	return true, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	removeCachedMedia(chatJID, id)
+	return true, nil
 }
 
 // SetReaction records one reactor's current reaction to a message. It is a
