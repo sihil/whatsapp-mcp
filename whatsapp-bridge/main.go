@@ -49,8 +49,9 @@ type Message struct {
 // Database handler for storing message history
 type MessageStore struct {
 	db                 *sql.DB
-	mergedLIDs         sync.Map    // LIDs already folded into their phone number (see lid_merge.go)
-	syncingCommunities atomic.Bool // a community sync pass is running (see group_links.go)
+	mergedLIDs         sync.Map      // LIDs already folded into their phone number (see lid_merge.go)
+	syncingCommunities atomic.Bool   // a community sync pass is running (see group_links.go)
+	mediaAdded         chan struct{} // wakes the media prefetcher (see media_prefetch.go)
 }
 
 // Initialize message store
@@ -99,7 +100,7 @@ func NewMessageStore() (*MessageStore, error) {
 			old_jid TEXT PRIMARY KEY,
 			new_jid TEXT NOT NULL
 		);
-	` + contactsSchema + ";" + senderIndexSchema + ";" + groupEventsSchema + ";" + groupLinksSchema + ";")
+	` + contactsSchema + ";" + senderIndexSchema + ";" + groupEventsSchema + ";" + groupLinksSchema + ";" + mediaFetchFailuresSchema + ";")
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to create tables: %v", err)
@@ -117,7 +118,7 @@ func NewMessageStore() (*MessageStore, error) {
 		return nil, err
 	}
 
-	return &MessageStore{db: db}, nil
+	return &MessageStore{db: db, mediaAdded: make(chan struct{}, 1)}, nil
 }
 
 // Close the database connection
@@ -170,6 +171,9 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 		id, chatJID, sender, content, timestamp, isFromMe, media.Type, media.Filename, nullIfEmpty(media.MimeType),
 		media.URL, media.MediaKey, media.FileSHA256, media.FileEncSHA256, media.FileLength,
 	)
+	if err == nil && media.Type != "" {
+		store.nudgeMediaAdded()
+	}
 	return err
 }
 
@@ -1066,6 +1070,7 @@ func main() {
 			logger.Infof("Connected to WhatsApp")
 			// Asks WhatsApp, so not on the event goroutine.
 			go syncCommunities(client, messageStore, logger)
+			messageStore.nudgeMediaAdded()
 
 		case *events.LoggedOut:
 			logger.Warnf("Device logged out, please scan QR code to log in again")
@@ -1140,6 +1145,14 @@ func main() {
 	fmt.Println("\n✓ Connected to WhatsApp! Type 'help' for commands.")
 
 	// Start REST API server
+	go newPrefetcher(messageStore, func(id, chatJID string) error {
+		if !client.IsConnected() {
+			return errNotConnected
+		}
+		_, _, err := downloadMedia(client, messageStore, id, chatJID)
+		return err
+	}, prefetchPause).run(context.Background())
+
 	startRESTServer(client, messageStore, apiReady)
 
 	// Create a channel to keep the main goroutine alive
