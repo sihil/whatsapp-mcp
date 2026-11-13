@@ -20,16 +20,15 @@ func recordSentMessage(ctx context.Context, lids lidMapper, store *MessageStore,
 	id string, at time.Time, msg *waE2E.Message) error {
 	chatJID := canonicalChatJID(ctx, lids, chat.ToNonAD(), types.EmptyJID).String()
 	content := extractTextContent(msg)
-	mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength := extractMediaInfo(msg)
-	if content == "" && mediaType == "" {
+	media := extractMediaInfo(msg)
+	if content == "" && media.Type == "" {
 		return nil
 	}
 	// messages.chat_jid references chats(jid); StoreChat keeps a known name.
 	if err := store.StoreChat(chatJID, "", at); err != nil {
 		return err
 	}
-	return store.StoreMessage(id, chatJID, ownJID.ToNonAD().String(), content, at, true,
-		mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength)
+	return store.StoreMessage(id, chatJID, ownJID.ToNonAD().String(), content, at, true, media)
 }
 
 // moveColumnValue rewrites reactions.<column> from oldVal to newVal. When the

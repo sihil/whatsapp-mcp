@@ -8,3 +8,6 @@ whatsapp-bridge/whatsapp-client
 whatsapp-mcp-server/.venv
 .pytest_cache
 __pycache__
+
+# Session state and downloaded media
+whatsapp-bridge/store/
