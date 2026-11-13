@@ -1,10 +1,13 @@
 """Send / live-action tool wrappers. These call the bridge's REST API (see
 whatsapp.py, api_client.py) rather than reading SQLite directly."""
+import os
 from typing import Annotated, Any, Dict, Optional, Tuple
 
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
+from config import media_dir
+from media_export import export_media
 from server import tool
 from whatsapp import (
     delete_message as whatsapp_delete_message,
@@ -125,18 +128,31 @@ def download_media(
 ) -> Dict[str, Any]:
     """Download media from a WhatsApp message and get the local file path.
     Returns a dict with success status, a status message, the file path, and
-    the file's filename, mime_type and size in bytes.
+    the file's filename, mime_type and size in bytes. When the server has a
+    media directory, the file is also saved there and the result adds
+    media_dir and media_dir_path (the file's path relative to media_dir): if
+    a folder with media_dir's name is mounted in your session, the file is at
+    media_dir_path inside it.
     Raises on failure (message/media not found, unreachable bridge, or a
     rejected download), with the bridge's actual error text."""
     file_path, status_message, details = whatsapp_download_media(message_id, chat_jid)
     if not file_path:
         raise RuntimeError(status_message)
-    return {
+    result = {
         "success": True,
         "message": status_message,
         "file_path": file_path,
         **details,
     }
+    rel = export_media(file_path, message_id, chat_jid, details.get("filename"))
+    if rel is not None:
+        root = media_dir()
+        result.update(
+            file_path=os.path.join(root, rel),
+            media_dir=root,
+            media_dir_path=rel,
+        )
+    return result
 
 
 @tool(title="List Group Members", annotations=_GROUP_MEMBERS)

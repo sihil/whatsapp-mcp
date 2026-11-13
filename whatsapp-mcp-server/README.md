@@ -129,6 +129,7 @@ Keep the files outside the repository: they hold phone numbers. The
 | `WHATSAPP_MCP_DB_PATH` | `../whatsapp-bridge/store/messages.db` (relative to this dir) | Overrides the path to the bridge's message store, opened read-only. |
 | `WHATSAPP_API_BASE_URL` | `http://localhost:8080/api` | Overrides the bridge's REST API base URL. |
 | `WHATSAPP_MCP_ALLOWED_MEDIA_DIRS` | unset (no restriction) | Allowlist of directories that outbound media files (for `send_file`/`send_audio_message`) must live under, separated by `os.pathsep` (`:` on Unix, `;` on Windows). Paths are resolved with `realpath` before comparison, but the caller's original path is what gets sent. Unset means any existing file is allowed. |
+| `WHATSAPP_MCP_MEDIA_DIR` | unset | Directory `download_media` also copies each file into, as `<chat name>/<YYYY-MM-DD HHMM> <name>`, so a Claude Desktop session with that folder mounted can open it. The result gives the path relative to the directory as `media_dir_path`. Use a separate directory per instance, or a session with one mounted sees another instance's media. |
 | `WHATSAPP_MCP_SEND_RATE_LIMIT` | `30` | Max outbound sends (across `send_message`, `send_file`, `send_audio_message`, `send_reaction`, `edit_message`, `delete_message`) per rolling minute. `0` or a negative value disables the limiter. |
 | `WHATSAPP_MCP_LOG_LEVEL` | `INFO` | Log level for the server's stderr logging. stdout carries only JSON-RPC — nothing is ever printed to stdout. |
 
@@ -151,6 +152,7 @@ render as a playable voice message).
   changes); `read_filter` for SQL,
   `check_readable`/`check_writable` for single chats and bridge calls.
 - `config.py` — env var reads, logging setup.
+- `media_export.py` — copies downloads into `WHATSAPP_MCP_MEDIA_DIR`.
 - `tools_read.py` / `tools_send.py` — the `@tool()` wrappers.
 - `tools_diagnostics.py` — `describe_client`, which reports the client's
   declared capabilities and MCP roots (to find a directory a session can
