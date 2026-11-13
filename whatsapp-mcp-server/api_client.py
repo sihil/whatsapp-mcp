@@ -213,7 +213,7 @@ def send_audio_message(recipient: str, media_path: str, reply_to: Optional[str] 
                 logger.warning(f"Failed to clean up temp ogg file {temp_path}: {e}")
 
 
-def download_media(message_id: str, chat_jid: str) -> Tuple[Optional[str], str]:
+def download_media(message_id: str, chat_jid: str) -> Tuple[Optional[str], str, Dict[str, Any]]:
     """Download media from a message and return the local file path.
 
     Args:
@@ -221,9 +221,10 @@ def download_media(message_id: str, chat_jid: str) -> Tuple[Optional[str], str]:
         chat_jid: The JID of the chat containing the message
 
     Returns:
-        (path, message): path is the local file path on success, None on
-        failure; message always carries the bridge's (or transport-layer)
-        status text.
+        (path, message, details): path is the local file path on success,
+        None on failure; message always carries the bridge's (or
+        transport-layer) status text; details holds the file's filename,
+        mime_type and size as the bridge reports them.
     """
     access_control.check_readable(chat_jid)
     body, error = _post(
@@ -231,17 +232,18 @@ def download_media(message_id: str, chat_jid: str) -> Tuple[Optional[str], str]:
     )
     if body is None:
         logger.error(error)
-        return None, error
+        return None, error, {}
 
     if not body.get("success", False):
         message = body.get("message", "Unknown error")
         logger.warning(f"Download failed: {message}")
-        return None, message
+        return None, message, {}
 
     path = body.get("path")
     message = body.get("message", "Media downloaded successfully")
     logger.info(f"Media downloaded successfully: {path}")
-    return path, message
+    details = {key: body.get(key) for key in ("filename", "mime_type", "size")}
+    return path, message, details
 
 
 def get_group_members(group_jid: str) -> dict:

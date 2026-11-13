@@ -19,13 +19,18 @@ class Message:
     edited: bool = False
     deleted: bool = False
     reactions: List[Dict[str, Any]] = field(default_factory=list)
+    filename: Optional[str] = None
+    size: Optional[int] = None
+    mime_type: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """`sender_name` is "Me" for own messages, the contact/chat name when
         known, and falls back to the raw sender JID otherwise. A deleted message
         keeps its row but has empty `content`; `reactions` holds one
-        {emoji, sender, sender_name, is_from_me} per reactor."""
-        return {
+        {emoji, sender, sender_name, is_from_me} per reactor. A media message
+        also has `filename` (documents only), `size` in bytes and `mime_type`,
+        each None when unknown; a caption is its `content`."""
+        result = {
             "id": self.id,
             "chat_jid": self.chat_jid,
             "chat_name": self.chat_name,
@@ -39,6 +44,9 @@ class Message:
             "deleted": bool(self.deleted),
             "reactions": self.reactions,
         }
+        if self.media_type:
+            result.update(filename=self.filename, size=self.size, mime_type=self.mime_type)
+        return result
 
 
 @dataclass

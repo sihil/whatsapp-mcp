@@ -222,6 +222,11 @@ def message_from_row(row: Sequence[Any], sender_names: Optional[Dict[str, str]] 
         sender_name=sender_name,
         edited=bool(row[8]),
         deleted=bool(row[9]),
+        # Only a document's filename is the sender's; the bridge makes up the
+        # others from the time it processed the message.
+        filename=row[10] if row[7] == "document" else None,
+        size=row[11] or None,
+        mime_type=row[12],
     )
 
 
