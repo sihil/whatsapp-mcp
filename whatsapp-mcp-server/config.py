@@ -58,6 +58,14 @@ def allowed_media_dirs() -> Optional[List[str]]:
     return [os.path.realpath(entry) for entry in raw.split(os.pathsep) if entry]
 
 
+def media_dir() -> Optional[str]:
+    """Directory download_media also copies files into, from
+    `WHATSAPP_MCP_MEDIA_DIR`, so a session with that folder mounted can open
+    them. `None` when unset."""
+    raw = os.environ.get("WHATSAPP_MCP_MEDIA_DIR")
+    return os.path.abspath(os.path.expanduser(raw)) if raw else None
+
+
 def send_rate_limit() -> int:
     """Max outbound sends per rolling minute, from `WHATSAPP_MCP_SEND_RATE_LIMIT`
     (default 30). `0` or negative disables the limiter."""
