@@ -36,7 +36,8 @@ func putMsg(t *testing.T, s *MessageStore, id, chat, sender, content, mediaType 
 	if err := s.StoreChat(chat, "", t0); err != nil {
 		t.Fatalf("StoreChat: %v", err)
 	}
-	if err := s.StoreMessage(id, chat, sender, content, t0, fromMe, mediaType, "", "http://u", []byte{1}, []byte{2}, []byte{3}, 9); err != nil {
+	if err := s.StoreMessage(id, chat, sender, content, t0, fromMe,
+		mediaInfo{Type: mediaType, URL: "http://u", MediaKey: []byte{1}, FileSHA256: []byte{2}, FileEncSHA256: []byte{3}, FileLength: 9}); err != nil {
 		t.Fatalf("StoreMessage: %v", err)
 	}
 }
