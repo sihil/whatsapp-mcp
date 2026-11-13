@@ -124,16 +124,18 @@ def download_media(
     chat_jid: Annotated[str, Field(description=_CHAT_JID_DESC)],
 ) -> Dict[str, Any]:
     """Download media from a WhatsApp message and get the local file path.
-    Returns a dict with success status, a status message, and the file path.
+    Returns a dict with success status, a status message, the file path, and
+    the file's filename, mime_type and size in bytes.
     Raises on failure (message/media not found, unreachable bridge, or a
     rejected download), with the bridge's actual error text."""
-    file_path, status_message = whatsapp_download_media(message_id, chat_jid)
+    file_path, status_message, details = whatsapp_download_media(message_id, chat_jid)
     if not file_path:
         raise RuntimeError(status_message)
     return {
         "success": True,
         "message": status_message,
         "file_path": file_path,
+        **details,
     }
 
 

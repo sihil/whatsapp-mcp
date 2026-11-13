@@ -79,13 +79,16 @@ def chat_name_expr(with_contacts: bool, chat: str = "c", contact: str = "ct") ->
     return f"COALESCE({name}, {contact_name_expr(contact + '.')})"
 
 
+def _message_columns(cursor: sqlite3.Cursor) -> set[str]:
+    cursor.execute("SELECT name FROM pragma_table_info('messages')")
+    return {row[0] for row in cursor.fetchall()}
+
+
 def status_available(cursor: sqlite3.Cursor) -> bool:
     """Whether the bridge that wrote this store has the edited_at/deleted_at
     columns on messages. Older stores lack them until the bridge restarts and
     migrates; messages then read as neither edited nor deleted."""
-    cursor.execute("SELECT name FROM pragma_table_info('messages')")
-    columns = {row[0] for row in cursor.fetchall()}
-    return {"edited_at", "deleted_at"} <= columns
+    return {"edited_at", "deleted_at"} <= _message_columns(cursor)
 
 
 def message_source(cursor: sqlite3.Cursor) -> str:
@@ -94,18 +97,22 @@ def message_source(cursor: sqlite3.Cursor) -> str:
     through `chat_name_expr`, so a message reports the same chat name
     `list_chats` would. Probes the store for the contacts table and the
     status columns, so build it once per request; on a store without the
-    status columns edited/deleted are constant 0."""
+    status columns edited/deleted are constant 0, and without mime_type it is
+    NULL."""
     with_contacts = contacts_available(cursor)
+    columns = _message_columns(cursor)
     status = (
         "messages.edited_at IS NOT NULL, messages.deleted_at IS NOT NULL"
-        if status_available(cursor) else "0, 0"
+        if {"edited_at", "deleted_at"} <= columns else "0, 0"
     )
+    mime = "messages.mime_type" if "mime_type" in columns else "NULL"
     return f"""
         SELECT messages.id, messages.chat_jid,
                {chat_name_expr(with_contacts, "chats")},
                messages.sender, messages.content, messages.timestamp,
                messages.is_from_me, messages.media_type,
-               {status}
+               {status},
+               messages.filename, messages.file_length, {mime}
         FROM messages
         JOIN chats ON messages.chat_jid = chats.jid
         {contacts_join(with_contacts, "chats")}

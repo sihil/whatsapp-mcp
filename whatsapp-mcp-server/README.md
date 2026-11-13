@@ -152,6 +152,9 @@ render as a playable voice message).
   `check_readable`/`check_writable` for single chats and bridge calls.
 - `config.py` — env var reads, logging setup.
 - `tools_read.py` / `tools_send.py` — the `@tool()` wrappers.
+- `tools_diagnostics.py` — `describe_client`, which reports the client's
+  declared capabilities and MCP roots (to find a directory a session can
+  open for downloaded media).
 - `models.py` — dataclasses for messages/chats/contacts.
 - `db.py`, `db_names.py`, `db_chats.py`, `db_contacts.py`, `db_messages.py` —
   SQLite read layer. `db_names.py` owns every SQL fragment that turns stored

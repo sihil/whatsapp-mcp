@@ -55,6 +55,23 @@ def chat_query(
     return " ".join(parts)
 
 
+def human_size(size: int) -> str:
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size // 1024} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
+def _media_label(message: Message) -> str:
+    details = [d for d in (
+        message.filename,
+        message.mime_type,
+        human_size(message.size) if message.size else None,
+    ) if d]
+    return f"{message.media_type}: {', '.join(details)}" if details else message.media_type
+
+
 def format_message(message: Message, show_chat_info: bool = True, cursor=None) -> str:
     """Render a single message as a human-readable line."""
     if show_chat_info:
@@ -69,7 +86,7 @@ def format_message(message: Message, show_chat_info: bool = True, cursor=None) -
 
     # Always surface the message ID: it is the handle for reply_to and download_media
     if message.media_type:
-        content_prefix = f"[{message.media_type} - Message ID: {message.id} - Chat JID: {message.chat_jid}] "
+        content_prefix = f"[{_media_label(message)} - Message ID: {message.id} - Chat JID: {message.chat_jid}] "
     else:
         content_prefix = f"[Message ID: {message.id}] "
 
