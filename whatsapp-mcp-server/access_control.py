@@ -36,6 +36,20 @@ records the links in group_links and every check reads them afresh. Without
 
     {"id": "120363000000000100@g.us", "name": "Edinburgh", "include": "community"}
 
+"memberDMs": true (off unless set) also makes readable the DM with anyone
+who is in a group this instance can read and in none of the account's other
+groups, and is not saved in the address book - for an instance scoped to an
+organisation's communities, where people message one-to-one as well as in
+the groups, without taking in friends who happen to be in them too. The
+bridge records group members in group_participants; every check reads them
+afresh.
+
+"denyRead" lists chats that are never readable, whatever else admits them:
+the way to keep out someone memberDMs lets in.
+
+    "memberDMs": true,
+    "denyRead": [{"id": "447700900001", "name": "A friend"}]
+
 The bare string "*" (no object wrapper) allows every chat for that scope -
 only use this for an explicit, intentionally-unrestricted instance.
 
@@ -57,6 +71,7 @@ import sys
 from typing import Any, NamedTuple, Optional
 
 import db
+from db_reactions import own_jid
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +97,8 @@ class Config(NamedTuple):
     name: str
     read: Scope
     write: Scope
+    member_dms: bool = False
+    deny: frozenset[str] = frozenset()
 
 
 class AllowlistError(Exception):
@@ -125,10 +142,21 @@ def _parse(path: str) -> Config:
         raise AllowlistError(f"Failed to load allowlist config from {path}: {e}") from e
     if not isinstance(config, dict):
         raise AllowlistError(f"Allowlist config at {path} is not a JSON object")
+    member_dms = config.get("memberDMs", False)
+    if not isinstance(member_dms, bool):
+        raise AllowlistError(f"Allowlist config at {path} has a non-boolean 'memberDMs': {member_dms!r}")
+    deny = config.get("denyRead", [])
+    if not isinstance(deny, list):
+        raise AllowlistError(f"Allowlist config at {path} has a 'denyRead' that is not a list")
+    deny_ids = [_entry_id(e, path, "denyRead") for e in deny]
+    if any(jid == "*" or community for jid, community in deny_ids):
+        raise AllowlistError(f"Allowlist config at {path} has a 'denyRead' entry that is \"*\" or a community")
     return Config(
         name=config.get("name", os.path.basename(path)),
         read=_load_scope(config, path, "allowRead"),
         write=_load_scope(config, path, "allowWrite", allow_empty=True),
+        member_dms=member_dms,
+        deny=frozenset(jid for jid, _ in deny_ids),
     )
 
 
@@ -218,12 +246,78 @@ def _expand(cursor: Optional[sqlite3.Cursor], scope: Scope) -> frozenset[str]:
     return _expand_aliases(cursor, _expand_communities(cursor, scope))
 
 
+def _is_dm(jid: str) -> bool:
+    return jid.endswith("@s.whatsapp.net") or jid.endswith("@lid")
+
+
+def member_dm_candidates(cursor: sqlite3.Cursor, readable: frozenset[str]) -> dict[str, list[str]]:
+    """Everyone in a readable group, other than the account itself, with the
+    groups outside `readable` they are also in. Empty on a store without
+    group_participants."""
+    groups = sorted(j for j in readable if j.endswith("@g.us"))
+    if not groups:
+        return {}
+    slots = ",".join("?" for _ in groups)
+    try:
+        cursor.execute(
+            f"""SELECT inside.participant, outside.group_jid
+                FROM (SELECT DISTINCT participant FROM group_participants
+                      WHERE group_jid IN ({slots})) inside
+                LEFT JOIN group_participants outside
+                  ON outside.participant = inside.participant
+                 AND outside.group_jid NOT IN ({slots})""",
+            (*groups, *groups),
+        )
+    except sqlite3.OperationalError:
+        return {}
+    rows = cursor.fetchall()
+    own = own_jid(cursor)
+    found: dict[str, list[str]] = {}
+    for participant, outside in rows:
+        if participant == own or not _is_dm(participant):
+            continue
+        found.setdefault(participant, [])
+        if outside:
+            found[participant].append(outside)
+    return found
+
+
+def saved_contacts(cursor: sqlite3.Cursor, jids) -> frozenset[str]:
+    jids = list(jids)
+    if not jids:
+        return frozenset()
+    try:
+        cursor.execute(
+            f"SELECT jid FROM contacts WHERE TRIM(full_name) <> '' "
+            f"AND jid IN ({','.join('?' for _ in jids)})",
+            jids,
+        )
+    except sqlite3.OperationalError:
+        return frozenset()
+    return frozenset(row[0] for row in cursor.fetchall())
+
+
+def _member_dms(cursor: sqlite3.Cursor, readable: frozenset[str]) -> frozenset[str]:
+    candidates = member_dm_candidates(cursor, readable)
+    only_inside = [jid for jid, outside in candidates.items() if not outside]
+    return frozenset(only_inside) - saved_contacts(cursor, only_inside)
+
+
+def _readable(cursor: Optional[sqlite3.Cursor], config: Config) -> frozenset[str]:
+    jids = _expand(cursor, config.read)
+    if config.member_dms and cursor is not None:
+        jids |= _expand_aliases(cursor, _member_dms(cursor, jids))
+    return jids - _expand_aliases(cursor, config.deny)
+
+
 def readable_jids(cursor: sqlite3.Cursor) -> Optional[frozenset[str]]:
     """Every chat JID that may be read, or None when every chat may."""
-    scope = _current().read
-    if "*" in scope.jids:
+    config = _current()
+    if "*" in config.read.jids and not config.deny:
         return None
-    return _expand(cursor, scope)
+    if "*" in config.read.jids:
+        raise PermissionError("denyRead cannot be combined with allowRead \"*\"")
+    return _readable(cursor, config)
 
 
 def _expand_aliases(cursor: Optional[sqlite3.Cursor], jids: frozenset[str]) -> frozenset[str]:
@@ -265,20 +359,20 @@ def _with_cursor(check, cursor: Optional[sqlite3.Cursor]):
 
 def read_filter(cursor: sqlite3.Cursor, column: str) -> tuple[str, list[str]]:
     """SQL fragment + params restricting `column` to readable chat JIDs."""
-    scope = _current().read
-    if "*" in scope.jids:
+    jids = readable_jids(cursor)
+    if jids is None:
         return "1=1", []
-    jids = sorted(_expand(cursor, scope))
+    jids = sorted(jids)
     return f"{column} IN ({','.join('?' for _ in jids)})", jids
 
 
 def check_readable(jid: str, cursor: Optional[sqlite3.Cursor] = None) -> None:
     """Raise PermissionError unless the chat `jid` may be read."""
     config = _current()
-    if "*" in config.read.jids:
+    if "*" in config.read.jids and not config.deny:
         return
     if _normalize(jid) not in _with_cursor(
-        lambda c: _expand(c, config.read), cursor
+        lambda c: readable_jids(c) if c is not None else _expand(None, config.read) - config.deny, cursor
     ):
         raise PermissionError(
             f"{jid} is not in the read allowlist of the '{config.name}' WhatsApp MCP server"

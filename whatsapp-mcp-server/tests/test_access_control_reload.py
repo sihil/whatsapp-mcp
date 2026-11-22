@@ -1,32 +1,10 @@
-import json
 import os
-import time
 
 import pytest
 
 import access_control
 from conftest import GROUP, OTHER_GROUP, STRANGER
 from whatsapp import get_chat, list_chats, send_message
-
-
-@pytest.fixture
-def allowlist():
-    """Rewrite the session's allowlist file in place, restoring it afterwards."""
-    path = os.environ["WHATSAPP_MCP_ALLOWLIST"]
-    with open(path) as f:
-        original = f.read()
-
-    def write(content):
-        with open(path, "w") as f:
-            f.write(content if isinstance(content, str) else json.dumps(content))
-        # Coarse filesystem timestamps could hide a rewrite within one tick.
-        stamp = time.time_ns() + 1_000_000_000 * write.calls
-        write.calls += 1
-        os.utime(path, ns=(stamp, stamp))
-
-    write.calls = 1
-    yield write
-    write(original)
 
 
 def _config(read, write=(), name="test"):
