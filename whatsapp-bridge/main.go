@@ -100,7 +100,7 @@ func NewMessageStore() (*MessageStore, error) {
 			old_jid TEXT PRIMARY KEY,
 			new_jid TEXT NOT NULL
 		);
-	` + contactsSchema + ";" + senderIndexSchema + ";" + groupEventsSchema + ";" + groupLinksSchema + ";" + mediaFetchFailuresSchema + ";")
+	` + contactsSchema + ";" + senderIndexSchema + ";" + groupEventsSchema + ";" + groupLinksSchema + ";" + mediaFetchFailuresSchema + ";" + groupParticipantsSchema + ";")
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to create tables: %v", err)
@@ -1054,6 +1054,9 @@ func main() {
 			}
 			if err := messageStore.ApplyOwnMembership(changes, client.Store.GetJID().ToNonAD().String()); err != nil {
 				logger.Warnf("Failed to record own membership of %s: %v", v.JID, err)
+			}
+			if err := messageStore.ApplyParticipantChanges(changes); err != nil {
+				logger.Warnf("Failed to update members of %s: %v", v.JID, err)
 			}
 			if links, err := messageStore.ApplyGroupLinkChanges(context.Background(), client.Store.LIDs, v); err != nil {
 				logger.Warnf("Failed to apply community link changes in %s: %v", v.JID, err)
