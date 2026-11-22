@@ -29,18 +29,19 @@ def test_missing_allow_write_refuses_to_start(monkeypatch, tmp_path):
 
 
 def test_empty_allow_write_means_read_only(monkeypatch, tmp_path):
-    _, read, write = _load_with(
+    config = _load_with(
         monkeypatch, tmp_path, {"allowRead": [{"id": "447700900003"}], "allowWrite": []}
     )
+    read, write = config.read, config.write
     assert read.jids == {"447700900003@s.whatsapp.net"}
     assert write.jids == frozenset()
 
 
 def test_community_entry_is_kept_apart(monkeypatch, tmp_path):
-    _, read, _ = _load_with(
+    read = _load_with(
         monkeypatch, tmp_path,
         {"allowRead": [{"id": "1@g.us", "include": "community"}, {"id": "2@g.us"}], "allowWrite": []},
-    )
+    ).read
     assert read.jids == {"2@g.us"}
     assert read.communities == {"1@g.us"}
 

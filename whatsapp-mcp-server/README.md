@@ -112,6 +112,25 @@ version.
   ```json
   { "id": "120363000000000100@g.us", "name": "Edinburgh", "include": "community" }
   ```
+- `"memberDMs": true` (off unless set) also makes readable the DM with
+  anyone who is in one of the instance's readable groups, is in none of the
+  account's other groups, and is not saved in the address book. It suits an
+  instance scoped to an organisation's communities, where people message
+  one-to-one as well as in the groups, without taking in friends who are in
+  them too. Membership comes from the bridge's `group_participants`, read
+  per check. Reads only: sending still needs `allowWrite`.
+- `"denyRead"` lists chats that are never readable, whatever admits them.
+  It is how to keep out someone `memberDMs` lets in, and cannot be combined
+  with `"allowRead": "*"`.
+
+  ```json
+  "memberDMs": true,
+  "denyRead": [{ "id": "447700900001", "name": "A friend" }]
+  ```
+
+  `uv run python access_report.py`, with `WHATSAPP_MCP_ALLOWLIST` set,
+  lists the DMs the rule admits, those already readable through
+  `allowRead`, and those kept out with the reason.
 - `"*"` in place of the list allows every chat for that scope.
 - A person listed by phone number also matches their `@lid` chat once the
   bridge has recorded the pairing in `jid_aliases`, and the other way round.
@@ -153,6 +172,8 @@ render as a playable voice message).
   `check_readable`/`check_writable` for single chats and bridge calls.
 - `config.py` — env var reads, logging setup.
 - `media_export.py` — copies downloads into `WHATSAPP_MCP_MEDIA_DIR`.
+- `access_report.py` — command-line report of the DMs `memberDMs` admits
+  and keeps out, with names; for the account owner, not an MCP tool.
 - `tools_read.py` / `tools_send.py` — the `@tool()` wrappers.
 - `tools_diagnostics.py` — `describe_client`, which reports the client's
   declared capabilities and MCP roots (to find a directory a session can

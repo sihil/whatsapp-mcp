@@ -3,6 +3,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import time
 
 import pytest
 
@@ -58,6 +59,10 @@ _SCHEMA = """
         group_jid TEXT PRIMARY KEY, parent_jid TEXT NOT NULL DEFAULT '',
         is_community INTEGER NOT NULL DEFAULT 0, is_announcement INTEGER NOT NULL DEFAULT 0,
         name TEXT NOT NULL DEFAULT '', is_member INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE group_participants (
+        group_jid TEXT NOT NULL, participant TEXT NOT NULL,
+        PRIMARY KEY (group_jid, participant)
     );
     CREATE TABLE group_events (
         chat_jid TEXT NOT NULL, kind TEXT NOT NULL, participant TEXT NOT NULL,
@@ -144,3 +149,23 @@ def bridge(monkeypatch):
 
     monkeypatch.setattr(requests, "post", fake_post)
     return calls
+
+
+@pytest.fixture
+def allowlist():
+    """Rewrite the session's allowlist file in place, restoring it afterwards."""
+    path = os.environ["WHATSAPP_MCP_ALLOWLIST"]
+    with open(path) as f:
+        original = f.read()
+
+    def write(content):
+        with open(path, "w") as f:
+            f.write(content if isinstance(content, str) else json.dumps(content))
+        # Coarse filesystem timestamps could hide a rewrite within one tick.
+        stamp = time.time_ns() + 1_000_000_000 * write.calls
+        write.calls += 1
+        os.utime(path, ns=(stamp, stamp))
+
+    write.calls = 1
+    yield write
+    write(original)
