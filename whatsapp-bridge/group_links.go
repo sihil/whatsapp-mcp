@@ -131,15 +131,17 @@ func (store *MessageStore) PutSubGroups(community types.JID, subs []*types.Group
 type groupLister interface {
 	GetJoinedGroups(ctx context.Context) ([]*types.GroupInfo, error)
 	GetSubGroups(ctx context.Context, community types.JID) ([]*types.GroupLinkTarget, error)
+	GetLinkedGroupsParticipants(ctx context.Context, community types.JID) ([]types.JID, error)
 }
 
-// syncGroupLinks records every joined group, then asks each community it
-// found, by membership or as a group's parent, for its subgroups. Lookups are
+// syncGroupLinks records every joined group with its members, then asks each
+// community it found, by membership or as a group's parent, for its subgroups
+// and for everyone across them. Lookups are
 // paced by pause, a community synced within subGroupsMaxAge of now is skipped,
 // and a rate limit ends the pass early with errSubGroupsRateLimited: those
 // left over are asked on a later pass. It reports the communities recorded
 // and those still due.
-func syncGroupLinks(ctx context.Context, lister groupLister, store *MessageStore, now time.Time, pause func()) (recorded, remaining int, err error) {
+func syncGroupLinks(ctx context.Context, lister groupLister, lids lidMapper, store *MessageStore, now time.Time, pause func()) (recorded, remaining int, err error) {
 	joined, err := lister.GetJoinedGroups(ctx)
 	if err != nil {
 		return 0, 0, fmt.Errorf("listing joined groups: %w", err)
@@ -160,6 +162,17 @@ func syncGroupLinks(ctx context.Context, lister groupLister, store *MessageStore
 		if err := store.PutGroupInfo(info); err != nil {
 			return 0, 0, err
 		}
+		// A community's own participant list is only its announcement
+		// audience; its rows hold the community-wide list, written below.
+		if !info.IsParent {
+			members := make([]string, 0, len(info.Participants))
+			for _, p := range info.Participants {
+				members = append(members, participantJID(ctx, lids, p))
+			}
+			if err := store.PutGroupParticipants(info.JID.String(), members); err != nil {
+				return 0, 0, err
+			}
+		}
 		joinedJIDs = append(joinedJIDs, info.JID.String())
 		if info.IsParent {
 			note(info.JID)
@@ -172,6 +185,11 @@ func syncGroupLinks(ctx context.Context, lister groupLister, store *MessageStore
 		notJoined += ` AND group_jid NOT IN (?` + strings.Repeat(",?", len(joinedJIDs)-1) + `)`
 	}
 	if _, err := store.db.Exec(notJoined, joinedJIDs...); err != nil {
+		return 0, 0, err
+	}
+	if _, err := store.db.Exec(`
+		DELETE FROM group_participants WHERE group_jid IN (
+			SELECT group_jid FROM group_links WHERE is_member = 0 AND is_community = 0)`); err != nil {
 		return 0, 0, err
 	}
 
@@ -190,6 +208,22 @@ func syncGroupLinks(ctx context.Context, lister groupLister, store *MessageStore
 		}
 		if err := store.PutSubGroups(community, subs); err != nil {
 			return recorded, len(due) - i, err
+		}
+		pause()
+		everyone, err := lister.GetLinkedGroupsParticipants(ctx, community)
+		if errors.Is(err, whatsmeow.ErrIQRateOverLimit) {
+			return recorded, len(due) - i, errSubGroupsRateLimited
+		}
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s members: %v", community, err))
+		} else {
+			members := make([]string, 0, len(everyone))
+			for _, jid := range everyone {
+				members = append(members, canonicalContactJID(ctx, lids, jid).String())
+			}
+			if err := store.PutGroupParticipants(community.String(), members); err != nil {
+				return recorded, len(due) - i, err
+			}
 		}
 		if _, err := store.db.Exec(`
 			INSERT INTO community_syncs (community_jid, synced_at) VALUES (?, ?)
@@ -339,7 +373,7 @@ func syncCommunities(client *whatsmeow.Client, store *MessageStore, logger waLog
 	}
 	defer store.syncingCommunities.Store(false)
 	for attempt := 1; attempt <= 6; attempt++ {
-		recorded, remaining, err := syncGroupLinks(context.Background(), client, store, time.Now(),
+		recorded, remaining, err := syncGroupLinks(context.Background(), client, client.Store.LIDs, store, time.Now(),
 			func() { time.Sleep(2 * time.Second) })
 		logger.Infof("Community structure: %d communities synced, %d still due", recorded, remaining)
 		if !errors.Is(err, errSubGroupsRateLimited) {

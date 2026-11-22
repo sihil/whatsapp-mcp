@@ -87,10 +87,19 @@ func TestPutGroupInfoRecordsCommunityStructure(t *testing.T) {
 }
 
 type fakeGroupLister struct {
-	joined    []*types.GroupInfo
-	subGroups map[string][]*types.GroupLinkTarget
-	failures  map[string]error
-	asked     []string
+	joined           []*types.GroupInfo
+	subGroups        map[string][]*types.GroupLinkTarget
+	failures         map[string]error
+	asked            []string
+	communityMembers map[string][]types.JID
+	memberFailures   map[string]error
+}
+
+func (f *fakeGroupLister) GetLinkedGroupsParticipants(_ context.Context, community types.JID) ([]types.JID, error) {
+	if err := f.memberFailures[community.String()]; err != nil {
+		return nil, err
+	}
+	return f.communityMembers[community.String()], nil
 }
 
 func (f *fakeGroupLister) GetJoinedGroups(context.Context) ([]*types.GroupInfo, error) {
@@ -126,7 +135,7 @@ func TestSyncGroupLinks(t *testing.T) {
 			},
 		},
 	}
-	recorded, remaining, err := syncGroupLinks(context.Background(), lister, s, t0, func() {})
+	recorded, remaining, err := syncGroupLinks(context.Background(), lister, fakeLIDMapper{}, s, t0, func() {})
 	if err != nil {
 		t.Fatalf("syncGroupLinks: %v", err)
 	}
@@ -259,20 +268,21 @@ func TestSyncGroupLinksPacesAndStopsWhenRateLimited(t *testing.T) {
 	lister.failures[second] = whatsmeow.ErrIQRateOverLimit
 	pauses := 0
 
-	recorded, remaining, err := syncGroupLinks(ctx, lister, s, t0, func() { pauses++ })
+	recorded, remaining, err := syncGroupLinks(ctx, lister, fakeLIDMapper{}, s, t0, func() { pauses++ })
 	if !errors.Is(err, errSubGroupsRateLimited) {
 		t.Fatalf("err = %v, want rate limited", err)
 	}
 	if recorded != 1 || remaining != 2 || len(lister.asked) != 2 {
 		t.Errorf("recorded %d, remaining %d, asked %v", recorded, remaining, lister.asked)
 	}
-	if pauses != 1 {
-		t.Errorf("%d pauses between 2 lookups", pauses)
+	// The first community's subgroups and members, then the second's subgroups.
+	if pauses != 2 {
+		t.Errorf("%d pauses between 3 lookups", pauses)
 	}
 
 	delete(lister.failures, second)
 	lister.asked = nil
-	recorded, remaining, err = syncGroupLinks(ctx, lister, s, t0.Add(time.Hour), func() {})
+	recorded, remaining, err = syncGroupLinks(ctx, lister, fakeLIDMapper{}, s, t0.Add(time.Hour), func() {})
 	if err != nil || recorded != 2 || remaining != 0 {
 		t.Fatalf("retry: recorded %d, remaining %d, err %v", recorded, remaining, err)
 	}
@@ -281,7 +291,7 @@ func TestSyncGroupLinksPacesAndStopsWhenRateLimited(t *testing.T) {
 	}
 
 	lister.asked = nil
-	if _, _, err := syncGroupLinks(ctx, lister, s, t0.Add(25*time.Hour), func() {}); err != nil {
+	if _, _, err := syncGroupLinks(ctx, lister, fakeLIDMapper{}, s, t0.Add(25*time.Hour), func() {}); err != nil {
 		t.Fatal(err)
 	}
 	if len(lister.asked) != 3 {
@@ -313,7 +323,7 @@ func TestSyncGroupLinksRecordsMembership(t *testing.T) {
 			tCommunity: {linkTarget(tSubgroup, "Corstorphine", false), linkTarget(tHidden, "Leith", false)},
 		},
 	}
-	if _, _, err := syncGroupLinks(ctx, lister, s, t0, func() {}); err != nil {
+	if _, _, err := syncGroupLinks(ctx, lister, fakeLIDMapper{}, s, t0, func() {}); err != nil {
 		t.Fatal(err)
 	}
 	if !isMember(t, s, tSubgroup) || !isMember(t, s, tStandard) {
@@ -324,7 +334,7 @@ func TestSyncGroupLinksRecordsMembership(t *testing.T) {
 	}
 
 	lister.joined = lister.joined[:1]
-	if _, _, err := syncGroupLinks(ctx, lister, s, t0.Add(time.Hour), func() {}); err != nil {
+	if _, _, err := syncGroupLinks(ctx, lister, fakeLIDMapper{}, s, t0.Add(time.Hour), func() {}); err != nil {
 		t.Fatal(err)
 	}
 	if isMember(t, s, tStandard) {

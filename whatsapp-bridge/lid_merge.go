@@ -84,6 +84,9 @@ func mergeLID(ctx context.Context, tx *sql.Tx, lid, pn string) error {
 	if err := moveGroupEventIdentity(ctx, tx, lid, pn); err != nil {
 		return err
 	}
+	if err := moveParticipantIdentity(ctx, tx, lid, pn); err != nil {
+		return err
+	}
 	var chats int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM chats WHERE jid = ?`, lid).Scan(&chats); err != nil || chats == 0 {
 		return err
